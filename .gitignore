@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Production builds
+dist/
+*/dist/
+dist-ssr/
+build/
+out/
+
+# Environment and sensitive keys
+.env
+.env.*
+*.env
+*.env.*
+*.local
+*.pem
+*.key
+*.cert
+*.crt
+secrets.json
+credentials.json
+token.json
+
+# Cache and temporary files
+.cache/
+.temp/
+.tmp/
+*.tmp
+tmp/
+temp/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Python & Backend caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# System and Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
