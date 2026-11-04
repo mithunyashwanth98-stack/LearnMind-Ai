@@ -30,6 +30,7 @@ from database import (
     save_student_partition,
     create_or_update_syllabus,
     get_syllabus_by_id,
+    get_syllabus_by_file_hash,
     get_syllabi_for_user,
     get_syllabus_by_subject,
     delete_syllabus,
@@ -122,6 +123,14 @@ class SaveCoverageRequest(BaseModel):
 
 class ToggleTopicCompleteRequest(BaseModel):
     completed: bool
+
+class ConfirmSyllabusRequest(BaseModel):
+    file_hash: Optional[str] = None
+    subject_name: str
+    subject_code: Optional[str] = "MOD-101"
+    original_filename: Optional[str] = "Syllabus.pdf"
+    raw_text: Optional[str] = ""
+    hierarchy: dict
 
 class TutorChatRequest(BaseModel):
     message: str
@@ -541,13 +550,20 @@ def tutor_chat_endpoint(req: TutorChatRequest, current_user: dict = Depends(get_
 # PART 5: SYLLABUS INGESTION & DECONSTRUCTION ENGINE
 # -------------------------------------------------------------
 
-@app.post("/api/syllabus/upload-file")
-async def upload_syllabus_file(
+@app.post("/api/syllabus/extract-preview")
+async def extract_syllabus_preview(
     file: UploadFile = File(...),
     subject_name: Optional[str] = Form(None),
     subject_code: Optional[str] = Form(""),
+    force_reprocess: Optional[bool] = Form(False),
     current_user: dict = Depends(get_current_user)
 ):
+    """
+    Step 1 of Syllabus Understanding:
+    Parses PDF bytes, checks SHA-256 cache, runs multi-tier extraction (PyMuPDF / Gemini Vision / Pydantic schema / Validation),
+    and returns the structured syllabus PREVIEW for the student to review & edit before confirming.
+    Does NOT automatically save without student confirmation.
+    """
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -556,128 +572,195 @@ async def upload_syllabus_file(
 
     try:
         content = await file.read()
-        raw_text = extract_text_from_pdf(content)
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to read and parse PDF: {str(e)}"
-        )
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
 
-    if not raw_text or len(raw_text.strip()) < 20:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The uploaded PDF does not contain sufficient text for curriculum extraction."
-        )
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    # Check cache for identical file payload
+    if not force_reprocess:
+        cached = get_syllabus_by_file_hash(current_user["id"], file_hash)
+        if cached and cached.get("hierarchy"):
+            return {
+                "success": True,
+                "cached": True,
+                "file_hash": file_hash,
+                "subject_name": cached.get("subject_name"),
+                "subject_code": cached.get("subject_code"),
+                "original_filename": cached.get("original_filename") or file.filename,
+                "hierarchy": cached.get("hierarchy"),
+                "confidence_score": cached.get("confidence_score", 1.0),
+                "needs_review": False,
+                "validation": cached.get("hierarchy", {}).get("validation", {"confidenceScore": 1.0, "needsReview": False}),
+                "message": "Loaded validated curriculum from cache. Review and edit before confirming."
+            }
 
     input_sub_name = subject_name.strip() if (subject_name and subject_name.strip() and subject_name.lower() not in ("undefined", "null")) else ""
     input_sub_code = subject_code.strip() if (subject_code and subject_code.strip() and subject_code.lower() not in ("undefined", "null")) else ""
 
     try:
         hierarchy = extract_syllabus_hierarchy(
-            raw_text=raw_text,
+            pdf_bytes=content,
             subject_name=input_sub_name,
             subject_code=input_sub_code,
             filename=file.filename
         )
 
-        final_subject_name = input_sub_name or hierarchy.get("subjectName") or "Subject Curriculum"
+        final_subject_name = input_sub_name or hierarchy.get("subjectName") or "Academic Curriculum"
         final_subject_code = input_sub_code or hierarchy.get("subjectCode") or "MOD-101"
-        brain_region = hierarchy.get("brainRegion", "Frontal Lobe (Reasoning & Cognition)")
-        subject_id = "sub_" + re.sub(r'[^a-zA-Z0-9]', '_', final_subject_name.strip().lower())
-
-        syllabus = create_or_update_syllabus(
-            user_id=current_user["id"],
-            subject_id=subject_id,
-            subject_name=final_subject_name,
-            subject_code=final_subject_code,
-            original_filename=file.filename,
-            raw_text=raw_text,
-            hierarchy_dict=hierarchy,
-            extraction_status="extracted"
-        )
-
-        # Sync the newly extracted subject into the student's personal partition so it reflects instantly across the UI
-        try:
-            partition_data = get_student_partition(current_user["id"])
-            if partition_data:
-                subjects_list = partition_data.get("subjects", [])
-                fe_units = []
-                for u in hierarchy.get("units", []):
-                    fe_topics = []
-                    for t in u.get("topics", []):
-                        fe_topics.append({
-                            "id": t.get("id"),
-                            "name": t.get("name"),
-                            "status": "not_assessed",
-                            "masteryScore": 0,
-                            "confidence": "none",
-                            "completed": False,
-                            "misconceptions": [],
-                            "concepts": [
-                                {
-                                    "id": f"c_{t.get('id')}_{i+1}",
-                                    "name": st,
-                                    "description": f"Subtopic of {t.get('name')}",
-                                    "masteryScore": 0,
-                                    "status": "not_assessed",
-                                    "confidence": "none"
-                                }
-                                for i, st in enumerate(t.get("subtopics", []))
-                            ] or [
-                                {
-                                    "id": f"c_{t.get('id')}_1",
-                                    "name": t.get("name"),
-                                    "description": "Core concept",
-                                    "masteryScore": 0,
-                                    "status": "not_assessed",
-                                    "confidence": "none"
-                                }
-                            ]
-                        })
-                    fe_units.append({
-                        "id": u.get("id"),
-                        "title": u.get("title"),
-                        "topics": fe_topics
-                    })
-
-                subj_idx = next((i for i, s in enumerate(subjects_list) if s.get("id") == subject_id), None)
-                new_fe_subj = {
-                    "id": subject_id,
-                    "name": final_subject_name,
-                    "code": final_subject_code,
-                    "status": "not_assessed",
-                    "masteryScore": 0,
-                    "confidence": "none",
-                    "color": "#38bdf8" if any(k in final_subject_name.lower() for k in ["java", "oop", "code", "python"]) else "#a855f7",
-                    "brainRegion": brain_region,
-                    "nodeCoordinates": [0.6, 0.2, 0.4],
-                    "totalTopics": sum(len(u["topics"]) for u in fe_units),
-                    "completedTopics": 0,
-                    "detectedMisconceptionsCount": 0,
-                    "recommendedNextConcept": f"Start foundational study on {fe_units[0]['topics'][0]['name'] if fe_units and fe_units[0]['topics'] else final_subject_name}",
-                    "units": fe_units
-                }
-
-                if subj_idx is not None:
-                    subjects_list[subj_idx] = new_fe_subj
-                else:
-                    subjects_list.append(new_fe_subj)
-
-                partition_data["subjects"] = subjects_list
-                save_student_partition(current_user["id"], partition_data)
-        except Exception as part_err:
-            print("Warning: unable to sync new syllabus to partition:", part_err)
+        validation = hierarchy.get("validation", {})
+        confidence_score = validation.get("confidenceScore", 0.9)
+        needs_review = validation.get("needsReview", True)
 
         return {
             "success": True,
-            "message": "Syllabus extracted successfully.",
-            "syllabus": syllabus
+            "cached": False,
+            "file_hash": file_hash,
+            "subject_name": final_subject_name,
+            "subject_code": final_subject_code,
+            "original_filename": file.filename,
+            "hierarchy": hierarchy,
+            "confidence_score": confidence_score,
+            "needs_review": needs_review,
+            "validation": validation,
+            "message": "Curriculum extracted. Always review and edit units/topics before confirming."
         }
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Syllabus extraction error: {str(exc)}"
         )
+
+@app.post("/api/syllabus/confirm")
+def confirm_syllabus_endpoint(
+    req: ConfirmSyllabusRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Step 2 of Syllabus Understanding:
+    Invoked AFTER the student reviews, inspects, and approves the extracted syllabus.
+    Persists to SQLite and synchronizes with the student's personal partition.
+    """
+    sub_name = req.subject_name.strip()
+    if not sub_name:
+        raise HTTPException(status_code=400, detail="Subject name is required.")
+
+    sub_code = req.subject_code.strip() if req.subject_code else "MOD-101"
+    subject_id = "sub_" + re.sub(r'[^a-zA-Z0-9]', '_', sub_name.lower())
+
+    units = req.hierarchy.get("units", [])
+    if not units:
+        raise HTTPException(status_code=400, detail="Cannot confirm syllabus without any units or topics.")
+
+    # Save to SQLite database as confirmed
+    syllabus = create_or_update_syllabus(
+        user_id=current_user["id"],
+        subject_id=subject_id,
+        subject_name=sub_name,
+        subject_code=sub_code,
+        original_filename=req.original_filename or "Syllabus.pdf",
+        raw_text=req.raw_text or "",
+        hierarchy_dict=req.hierarchy,
+        extraction_status="confirmed",
+        file_hash=req.file_hash,
+        confidence_score=req.hierarchy.get("validation", {}).get("confidenceScore", 1.0)
+    )
+
+    # Synchronize into student partition
+    try:
+        partition_data = get_student_partition(current_user["id"])
+        if partition_data:
+            subjects_list = partition_data.get("subjects", [])
+            fe_units = []
+            for u in units:
+                fe_topics = []
+                for t in u.get("topics", []):
+                    fe_topics.append({
+                        "id": t.get("id"),
+                        "name": t.get("name"),
+                        "page_number": t.get("page_number", 1),
+                        "status": "not_assessed",
+                        "masteryScore": 0,
+                        "confidence": "none",
+                        "completed": False,
+                        "misconceptions": [],
+                        "concepts": [
+                            {
+                                "id": f"c_{t.get('id')}_{i+1}",
+                                "name": st,
+                                "description": f"Subtopic of {t.get('name')}",
+                                "masteryScore": 0,
+                                "status": "not_assessed",
+                                "confidence": "none"
+                            }
+                            for i, st in enumerate(t.get("subtopics", []))
+                        ] or [
+                            {
+                                "id": f"c_{t.get('id')}_1",
+                                "name": t.get("name"),
+                                "description": "Core concept",
+                                "masteryScore": 0,
+                                "status": "not_assessed",
+                                "confidence": "none"
+                            }
+                        ]
+                    })
+                fe_units.append({
+                    "id": u.get("id"),
+                    "title": u.get("title"),
+                    "page_number": u.get("page_number", 1),
+                    "topics": fe_topics
+                })
+
+            subj_idx = next((i for i, s in enumerate(subjects_list) if s.get("id") == subject_id), None)
+            new_fe_subj = {
+                "id": subject_id,
+                "name": sub_name,
+                "code": sub_code,
+                "status": "not_assessed",
+                "masteryScore": 0,
+                "confidence": "none",
+                "color": "#38bdf8" if any(k in sub_name.lower() for k in ["java", "oop", "code", "python"]) else "#a855f7",
+                "brainRegion": "Temporal Lobe" if any(k in sub_name.lower() for k in ["code", "prog", "java", "python"]) else "Frontal Lobe",
+                "nodeCoordinates": [0.6, 0.2, 0.4],
+                "totalTopics": sum(len(u["topics"]) for u in fe_units),
+                "completedTopics": 0,
+                "detectedMisconceptionsCount": 0,
+                "recommendedNextConcept": f"Start foundational study on {fe_units[0]['topics'][0]['name'] if fe_units and fe_units[0]['topics'] else sub_name}",
+                "units": fe_units
+            }
+
+            if subj_idx is not None:
+                subjects_list[subj_idx] = new_fe_subj
+            else:
+                subjects_list.append(new_fe_subj)
+
+            partition_data["subjects"] = subjects_list
+            save_student_partition(current_user["id"], partition_data)
+    except Exception as part_err:
+        print("Notice syncing confirmed syllabus to partition:", part_err)
+
+    return {
+        "success": True,
+        "message": "Syllabus confirmed successfully. Ready for individual topic coverage audit.",
+        "syllabus": syllabus
+    }
+
+@app.post("/api/syllabus/upload-file")
+async def upload_syllabus_file(
+    file: UploadFile = File(...),
+    subject_name: Optional[str] = Form(None),
+    subject_code: Optional[str] = Form(""),
+    current_user: dict = Depends(get_current_user)
+):
+    """Backwards-compatible extraction wrapper."""
+    return await extract_syllabus_preview(
+        file=file,
+        subject_name=subject_name,
+        subject_code=subject_code,
+        force_reprocess=False,
+        current_user=current_user
+    )
 
 @app.post("/api/syllabus/upload-text")
 def upload_syllabus_text(

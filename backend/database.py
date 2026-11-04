@@ -74,14 +74,24 @@ def init_db():
         subject_name TEXT NOT NULL,
         subject_code TEXT,
         original_filename TEXT,
+        file_hash TEXT,
         raw_text TEXT NOT NULL,
         hierarchy_json TEXT,
         extraction_status TEXT DEFAULT 'uploaded',
+        confidence_score REAL DEFAULT 1.0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     )
     """)
+
+    # Run auto-migrations for existing databases
+    cursor.execute("PRAGMA table_info(subject_syllabi)")
+    existing_cols = [col[1] for col in cursor.fetchall()]
+    if "file_hash" not in existing_cols:
+        cursor.execute("ALTER TABLE subject_syllabi ADD COLUMN file_hash TEXT")
+    if "confidence_score" not in existing_cols:
+        cursor.execute("ALTER TABLE subject_syllabi ADD COLUMN confidence_score REAL DEFAULT 1.0")
 
     # Topic Knowledge Base Table (Caches the 8 elements per topic)
     cursor.execute("""
@@ -410,7 +420,9 @@ def create_or_update_syllabus(
     original_filename: str,
     raw_text: str,
     hierarchy_dict: dict = None,
-    extraction_status: str = "uploaded"
+    extraction_status: str = "uploaded",
+    file_hash: str = None,
+    confidence_score: float = 1.0
 ) -> dict:
     conn = get_connection()
     cursor = conn.cursor()
@@ -432,13 +444,14 @@ def create_or_update_syllabus(
             UPDATE subject_syllabi
             SET subject_name = ?, subject_code = ?, original_filename = ?,
                 raw_text = ?, hierarchy_json = COALESCE(?, hierarchy_json),
-                extraction_status = ?, updated_at = ?
+                extraction_status = ?, file_hash = COALESCE(?, file_hash),
+                confidence_score = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
             """,
             (
                 subject_name, subject_code, original_filename,
-                raw_text, hierarchy_json, extraction_status, now_iso,
-                syllabus_id, user_id
+                raw_text, hierarchy_json, extraction_status, file_hash,
+                confidence_score, now_iso, syllabus_id, user_id
             )
         )
     else:
@@ -448,19 +461,43 @@ def create_or_update_syllabus(
             INSERT INTO subject_syllabi (
                 id, user_id, subject_id, subject_name, subject_code,
                 original_filename, raw_text, hierarchy_json, extraction_status,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                file_hash, confidence_score, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 syllabus_id, user_id, subject_id, subject_name, subject_code,
                 original_filename, raw_text, hierarchy_json, extraction_status,
-                now_iso, now_iso
+                file_hash, confidence_score, now_iso, now_iso
             )
         )
 
     conn.commit()
     conn.close()
     return get_syllabus_by_id(syllabus_id)
+
+def get_syllabus_by_file_hash(user_id: str, file_hash: str):
+    """Retrieves cached syllabus record for an identical file payload without calling Gemini again."""
+    if not file_hash:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM subject_syllabi WHERE user_id = ? AND file_hash = ?",
+        (user_id, file_hash)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    if d.get("hierarchy_json"):
+        try:
+            d["hierarchy"] = json.loads(d["hierarchy_json"])
+        except Exception:
+            d["hierarchy"] = None
+    else:
+        d["hierarchy"] = None
+    return d
 
 def get_syllabus_by_id(syllabus_id: str):
     conn = get_connection()
