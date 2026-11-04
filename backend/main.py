@@ -110,6 +110,7 @@ def get_current_user(authorization: Optional[str] = Header(None)):
 
 @app.get("/api/health")
 def health_check():
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
     return {
         "status": "online",
         "service": "LearnMind AI Backend API",

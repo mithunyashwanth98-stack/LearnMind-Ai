@@ -104,6 +104,7 @@ def send_password_reset_email(to_email: str, recipient_name: str, otp: str) -> d
     1. Brevo SMTP Relay protocol (for xsmtpsib-... keys).
     2. Brevo REST API v3 protocol (for xkeysib-... keys).
     """
+    load_dotenv(dotenv_path=env_path, override=True)
     smtp_key = os.getenv("BREVO_SMTP_KEY", "").strip() or os.getenv("BREVO_API_KEY", "").strip()
     api_key = os.getenv("BREVO_API_KEY", "").strip()
     sender_email = os.getenv("BREVO_SENDER_EMAIL", "").strip()
