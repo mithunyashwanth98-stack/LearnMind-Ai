@@ -8,6 +8,7 @@ interface HolographicCoreProps {
   isAudioPlaying?: boolean;
   errorMessage?: string;
   onCoreClick?: () => void;
+  size?: number;
 }
 
 interface Particle {
@@ -29,6 +30,7 @@ export const HolographicCore: React.FC<HolographicCoreProps> = ({
   isAudioPlaying = false,
   errorMessage,
   onCoreClick,
+  size = 460,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -57,8 +59,8 @@ export const HolographicCore: React.FC<HolographicCoreProps> = ({
     if (!ctx) return;
 
     let animationFrameId: number;
-    const width = 400;
-    const height = 400;
+    const width = size;
+    const height = size;
 
     // High-DPI screen sharp rendering
     const dpr = window.devicePixelRatio || 1;
@@ -507,12 +509,15 @@ export const HolographicCore: React.FC<HolographicCoreProps> = ({
       className="relative flex flex-col items-center justify-center select-none cursor-pointer group"
       title="Interactive Holographic Core • Click to toggle microphone or speech"
     >
-      {/* 400x400 Canvas Display Container */}
-      <div className="relative w-72 h-72 sm:w-80 sm:h-80 flex items-center justify-center">
+      {/* Dynamic Size Canvas Display Container */}
+      <div
+        className="relative flex items-center justify-center max-w-[85vw] max-h-[85vw]"
+        style={{ width: size, height: size }}
+      >
         <canvas
           ref={canvasRef}
-          style={{ width: 340, height: 340 }}
-          className="w-full h-full pointer-events-none drop-shadow-[0_0_25px_rgba(0,240,255,0.25)]"
+          style={{ width: size, height: size }}
+          className="w-full h-full pointer-events-none drop-shadow-[0_0_35px_rgba(0,240,255,0.35)]"
         />
 
         {/* Center overlay icon on hover */}

@@ -65,7 +65,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="font-mono text-[11px] tracking-widest text-cyan-300/80">
           <span className="font-bold text-white">LEARNMIND COGNITIVE CORE</span>
           <span className="mx-2 text-cyan-500/50">|</span>
-          <span className="text-cyan-400">NEURAL INTERFACE ONLINE</span>
+          <span className="text-cyan-400 uppercase">STUDENT: {student.name}</span>
         </div>
       </div>
 

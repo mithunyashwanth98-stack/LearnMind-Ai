@@ -11,17 +11,20 @@ import {
   Save,
   Check,
   User,
-  Zap
+  Zap,
+  LogOut
 } from 'lucide-react';
 
 interface SettingsPageProps {
   student: StudentProfile;
   onUpdateStudent: (updated: Partial<StudentProfile>) => void;
+  onLogout?: () => void;
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   student,
   onUpdateStudent,
+  onLogout,
 }) => {
   const [apiKey, setApiKey] = useState('');
   const [modelProvider, setModelProvider] = useState<'gemini' | 'local_fallback'>('local_fallback');
@@ -188,32 +191,28 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </div>
         </GlassCard>
 
-        {/* Research Experiment Mode Toggle */}
-        <GlassCard glowColor="amber" className="p-6 space-y-4">
-          <div className="flex items-center justify-between">
+        {/* Account & Session Isolation Card */}
+        <GlassCard glowColor="violet" className="p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-800">
             <div className="flex items-center gap-3">
-              <FlaskConical className="w-5 h-5 text-amber-400" />
+              <User className="w-5 h-5 text-purple-400" />
               <div>
-                <h3 className="text-base font-bold text-white">Scientific Research Mode</h3>
-                <p className="text-xs text-slate-400">
-                  Logs Bayesian variance convergence and confusion matrix metrics for college AI&DS
-                  research papers.
-                </p>
+                <h3 className="text-base font-bold text-white">Authenticated Profile: {student.name}</h3>
+                <p className="text-xs text-slate-400 font-mono">{student.email} • ID: {student.id}</p>
               </div>
             </div>
-
-            <button
-              onClick={() => setExperimentModeEnabled((prev) => !prev)}
-              className={`w-12 h-6 rounded-full transition-colors relative p-1 ${
-                experimentModeEnabled ? 'bg-cyan-500' : 'bg-slate-800'
-              }`}
-            >
-              <div
-                className={`w-4 h-4 rounded-full bg-slate-950 transition-transform ${
-                  experimentModeEnabled ? 'translate-x-6' : 'translate-x-0'
-                }`}
-              />
-            </button>
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                className="px-4 py-2 rounded-xl bg-red-950/70 hover:bg-red-900 border border-red-500/50 text-red-300 text-xs font-mono flex items-center gap-2 transition-colors cursor-pointer self-start sm:self-auto"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Log Out of Session</span>
+              </button>
+            )}
+          </div>
+          <div className="text-xs text-slate-400 font-mono">
+            Status: <span className="text-emerald-400 font-bold">Isolated Student Partition Active</span> • All assessments, misconceptions, and roadmaps are strictly scoped to this account.
           </div>
         </GlassCard>
       </div>

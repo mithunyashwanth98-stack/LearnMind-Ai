@@ -41,7 +41,7 @@ export const ReturnToBrainButton: React.FC<ReturnToBrainButtonProps> = ({
             <span>NEURAL CORE HUB</span>
           </div>
           <div className="text-xs font-black text-white group-hover:text-glow-cyan tracking-wide">
-            RETURN TO 3D BRAIN
+            RETURN TO BRAIN
           </div>
         </div>
 
