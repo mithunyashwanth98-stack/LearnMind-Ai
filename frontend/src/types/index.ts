@@ -33,12 +33,15 @@ export interface Topic {
   concepts: Concept[];
   misconceptions: Misconception[];
   completed: boolean;
+  pageNumber?: number;
+  coverageStatus?: 'completed' | 'currently_studying' | 'partially_covered' | 'not_started';
   recommendedNext?: string;
 }
 
 export interface Unit {
   id: string;
   title: string;
+  pageNumber?: number;
   topics: Topic[];
 }
 

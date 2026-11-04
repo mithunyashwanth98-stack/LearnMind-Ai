@@ -281,6 +281,62 @@ def heuristic_syllabus_parser(
     matches = list(unit_pattern.finditer(raw_text))
     units = []
 
+    # If standard UNIT/MODULE headings not found, check for ALL-CAPS section headers with colons
+    if not matches:
+        caps_pattern = re.compile(
+            r'(?:^|\n)([A-Z][A-Z\s,/&-]{4,60}):\s*([^\n]+(?:\n(?![A-Z][A-Z\s,/&-]{4,60}:)[^\n]+)*)',
+            re.MULTILINE
+        )
+        caps_matches = [
+            m for m in caps_pattern.finditer(raw_text)
+            if not re.search(r'\b(textbooks?|references?|outcomes?|assessments?|credits?|periods?|hours?|objectives?|experiments?|pattern)\b', m.group(1), re.IGNORECASE)
+        ]
+        if len(caps_matches) >= 2:
+            for idx, match in enumerate(caps_matches):
+                unit_title_clean = match.group(1).strip()
+                unit_body = match.group(2).strip()
+
+                approx_page = 1
+                if pages_info:
+                    for p in pages_info:
+                        if match.group(0).strip()[:30] in p.get("text", ""):
+                            approx_page = p.get("page_number", 1)
+                            break
+
+                # Extract topics inside this section
+                raw_topics = [t.strip(" -•*;\t\r\n\u200b") for t in re.split(r'[-–—•;]+', unit_body) if len(t.strip(" -•*;\t\r\n\u200b")) > 3]
+                topics = []
+                for t_idx, topic_str in enumerate(raw_topics[:8]):
+                    # Strip trailing hour counts like (6) or [4]
+                    clean_top = re.sub(r'\s*\([0-9]+\)\s*$', '', topic_str).strip()
+                    if clean_top and len(clean_top) > 2 and not re.match(r'^[0-9\s()]+$', clean_top):
+                        topics.append({
+                            "id": f"top_{idx + 1}_{t_idx + 1}",
+                            "name": clean_top[:70],
+                            "page_number": approx_page,
+                            "learningObjectives": [f"Understand core mechanisms of {clean_top[:40]}"],
+                            "prerequisites": ["Foundational Subject Principles"],
+                            "subtopics": [f"{clean_top[:30]} Principles", "Applications & Analysis"]
+                        })
+
+                if not topics:
+                    topics = [{
+                        "id": f"top_{idx + 1}_1",
+                        "name": f"Foundations of {unit_title_clean.title()[:40]}",
+                        "page_number": approx_page,
+                        "learningObjectives": ["Master fundamental principles"],
+                        "prerequisites": ["Introductory Concepts"],
+                        "subtopics": ["Theoretical Basis", "Implementation"]
+                    }]
+
+                units.append({
+                    "id": f"unit_{idx + 1}",
+                    "unitNumber": idx + 1,
+                    "title": f"Unit {idx + 1}: {unit_title_clean.title()}",
+                    "page_number": approx_page,
+                    "topics": topics
+                })
+
     if matches:
         for idx, match in enumerate(matches):
             unit_num_str = match.group(1).strip()
@@ -327,7 +383,7 @@ def heuristic_syllabus_parser(
                 "page_number": approx_page,
                 "topics": topics
             })
-    else:
+    elif not units:
         # Paragraph fallback
         units = [
             {
@@ -415,8 +471,8 @@ def extract_syllabus_hierarchy(
             logger.warning(f"PyMuPDF binary parse notice: {e}")
 
     client = get_gemini_client()
-    configured_model = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview").strip()
-    models_to_try = list(dict.fromkeys([configured_model, "gemini-2.5-flash", "gemini-flash-latest"]))
+    configured_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
+    models_to_try = list(dict.fromkeys([configured_model, "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"]))
 
     prompt_instructions = f"""You are the LearnMind AI Syllabus Deconstruction Engine.
 Analyze the following institutional syllabus document and extract a strict, clean, hierarchical curriculum structure.
@@ -544,8 +600,8 @@ def synthesize_topic_knowledge(
     5. Real-World Applications, 6. Misconceptions, 7. Formative Practice, 8. Diagnostic Questions.
     """
     client = get_gemini_client()
-    configured_model = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview").strip()
-    models_to_try = list(dict.fromkeys([configured_model, "gemini-2.5-flash", "gemini-flash-latest"]))
+    configured_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
+    models_to_try = list(dict.fromkeys([configured_model, "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"]))
 
     subtopics_str = ", ".join(subtopics) if subtopics else "General Principles"
     objectives_str = "; ".join(learning_objectives) if learning_objectives else "Master fundamental concepts"

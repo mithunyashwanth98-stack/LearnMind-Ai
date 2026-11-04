@@ -199,7 +199,70 @@ export async function apiTutorChat(
   return handleResponse(res);
 }
 
-// 10. Upload Syllabus PDF File
+// 10. Extract Syllabus Preview (Stage 1 of 2 - DOES NOT AUTO-SAVE)
+export async function apiExtractSyllabusPreview(
+  token: string,
+  file: File,
+  subjectName?: string,
+  subjectCode?: string,
+  forceReprocess: boolean = false
+): Promise<{
+  success: boolean;
+  cached: boolean;
+  file_hash: string;
+  subject_name: string;
+  subject_code: string;
+  original_filename: string;
+  hierarchy: any;
+  confidence_score: number;
+  needs_review: boolean;
+  validation?: any;
+  message: string;
+}> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (subjectName) formData.append('subject_name', subjectName);
+  if (subjectCode) formData.append('subject_code', subjectCode);
+  if (forceReprocess) formData.append('force_reprocess', 'true');
+
+  const res = await fetch(`${API_BASE}/syllabus/extract-preview`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+  return handleResponse(res);
+}
+
+// 10b. Confirm & Persist Syllabus (Stage 2 of 2 - After Student Review)
+export async function apiConfirmSyllabus(
+  token: string,
+  payload: {
+    file_hash?: string;
+    subject_name: string;
+    subject_code?: string;
+    original_filename?: string;
+    raw_text?: string;
+    hierarchy: any;
+  }
+): Promise<{
+  success: boolean;
+  message: string;
+  syllabus: any;
+}> {
+  const res = await fetch(`${API_BASE}/syllabus/confirm`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse(res);
+}
+
+// 10c. Upload Syllabus PDF File (Legacy wrapper)
 export async function apiUploadSyllabusFile(
   token: string,
   file: File,

@@ -291,6 +291,10 @@ export function App() {
                 onUpdateSubject={handleUpdateSubject}
                 sessionToken={token}
                 onNavigateToAssessment={(subjId) => handleLaunchAssessment(subjId)}
+                onNavigateToTutor={(subjId, topicId) => {
+                  if (topicId) handleLaunchTutor(topicId);
+                  else setActiveSection('tutor');
+                }}
               />
             )}
 
