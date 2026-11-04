@@ -407,3 +407,4 @@ export async function requestPasswordReset(email: string): Promise<string> {
 
   return `A reset verification link has been sent to ${cleanEmail}. In demo mode, your password is ready to be updated.`;
 }
+

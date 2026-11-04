@@ -12,6 +12,9 @@ out/
 # Environment and sensitive keys
 .env
 .env.*
+!.env.example
+!*.env.example
+!*/.env.example
 *.env
 *.env.*
 *.local
@@ -35,7 +38,7 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 
-# Python & Backend caches
+# Python & Backend databases and caches
 __pycache__/
 *.pyc
 *.pyo
@@ -44,6 +47,9 @@ __pycache__/
 .venv/
 venv/
 env/
+*.db
+*.sqlite
+*.sqlite3
 
 # System and Editor files
 .DS_Store

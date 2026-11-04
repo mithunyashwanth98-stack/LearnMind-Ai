@@ -28,10 +28,21 @@ import {
   StudentDataPartition,
   initializeDatabase,
 } from './services/db';
+import { apiGetMe, apiLogout, apiUpdatePartition } from './services/api';
 
 export function App() {
+  const [token, setToken] = useState<string>(() => {
+    return (
+      sessionStorage.getItem('learnmind_session_token') ||
+      localStorage.getItem('learnmind_session_token') ||
+      ''
+    );
+  });
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return getCurrentSession() !== null;
+    return Boolean(
+      sessionStorage.getItem('learnmind_session_token') ||
+      localStorage.getItem('learnmind_session_token')
+    );
   });
   const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
   const [brainMode, setBrainMode] = useState<BrainMode>('compact');
@@ -46,16 +57,42 @@ export function App() {
   // Verify and hydrate current user session on mount
   useEffect(() => {
     initializeDatabase().then(() => {
-      const session = getCurrentSession();
-      if (session) {
-        const partition = getStudentPartition(session.userId);
-        if (partition) {
-          setStudent(partition.profile);
-          setSubjects(partition.subjects);
-          setMisconceptions(partition.misconceptions);
-          setLearningPath(partition.learningPath);
-          setIsAuthenticated(true);
-        }
+      const storedToken =
+        sessionStorage.getItem('learnmind_session_token') ||
+        localStorage.getItem('learnmind_session_token');
+
+      if (storedToken) {
+        apiGetMe(storedToken)
+          .then((res) => {
+            if (res.user && res.partition) {
+              setToken(storedToken);
+              setStudent(res.partition.profile);
+              setSubjects(res.partition.subjects);
+              setMisconceptions(res.partition.misconceptions);
+              setLearningPath(res.partition.learningPath);
+              setIsAuthenticated(true);
+            } else {
+              handleLogout();
+            }
+          })
+          .catch(() => {
+            // Fallback to client-side partition if available (e.g. offline)
+            const session = getCurrentSession();
+            if (session) {
+              const partition = getStudentPartition(session.userId);
+              if (partition) {
+                setStudent(partition.profile);
+                setSubjects(partition.subjects);
+                setMisconceptions(partition.misconceptions);
+                setLearningPath(partition.learningPath);
+                setIsAuthenticated(true);
+                return;
+              }
+            }
+            handleLogout();
+          });
+      } else {
+        setIsAuthenticated(false);
       }
     });
   }, []);
@@ -72,16 +109,28 @@ export function App() {
     const miscs = updatedMisconceptions || misconceptions;
     const path = updatedPath || learningPath;
 
-    saveStudentPartition(prof.id, {
+    const dataToSave: StudentDataPartition = {
       profile: prof,
       subjects: subs,
       misconceptions: miscs,
       learningPath: path,
       tutorMessages: [],
-    });
+    };
+
+    saveStudentPartition(prof.id, dataToSave);
+    if (token) {
+      apiUpdatePartition(token, dataToSave);
+    }
   };
 
-  const handleLoginSuccess = (user: UserAccount, partition: StudentDataPartition) => {
+  const handleLoginSuccess = (
+    user: UserAccount,
+    partition: StudentDataPartition,
+    sessionToken: string
+  ) => {
+    setToken(sessionToken);
+    sessionStorage.setItem('learnmind_session_token', sessionToken);
+    sessionStorage.setItem('learnmind_session_user_id', user.id);
     setStudent(partition.profile);
     setSubjects(partition.subjects);
     setMisconceptions(partition.misconceptions);
@@ -92,7 +141,14 @@ export function App() {
   };
 
   const handleLogout = () => {
+    if (token) {
+      apiLogout(token).catch(() => {});
+    }
     logoutUser();
+    sessionStorage.removeItem('learnmind_session_token');
+    sessionStorage.removeItem('learnmind_session_user_id');
+    localStorage.removeItem('learnmind_session_token');
+    setToken('');
     setIsAuthenticated(false);
     setActiveSection('dashboard');
     setBrainMode('compact');
