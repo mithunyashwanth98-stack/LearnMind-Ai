@@ -353,7 +353,13 @@ export const TutorPage: React.FC<TutorPageProps> = ({
         subjects.find(
           (s) =>
             s.name.toLowerCase() === currentTopic.toLowerCase() ||
-            s.units?.some((u) => u.topics.includes(currentTopic))
+            s.units?.some((u) =>
+              u.topics.some(
+                (t) =>
+                  t.name.toLowerCase() === currentTopic.toLowerCase() ||
+                  t.id === currentTopic
+              )
+            )
         ) || subjects[0];
 
       const res = await apiTutorChat(

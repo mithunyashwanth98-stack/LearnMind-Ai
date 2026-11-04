@@ -1,10 +1,11 @@
 import os
+import re
 import time
 import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Header, Depends, status
+from fastapi import FastAPI, HTTPException, Header, Depends, status, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 import bcrypt
@@ -26,10 +27,27 @@ from database import (
     get_session,
     delete_session,
     get_student_partition,
-    save_student_partition
+    save_student_partition,
+    create_or_update_syllabus,
+    get_syllabus_by_id,
+    get_syllabi_for_user,
+    get_syllabus_by_subject,
+    delete_syllabus,
+    update_syllabus_hierarchy,
+    save_topic_knowledge_entry,
+    get_topic_knowledge_entry,
+    get_all_topic_knowledge_for_syllabus,
+    save_student_topic_coverage_entry,
+    get_student_topic_coverage_list
 )
 from email_service import send_password_reset_email
 from tutor_service import generate_tutor_response
+from syllabus_service import (
+    extract_text_from_pdf,
+    extract_syllabus_hierarchy,
+    synthesize_topic_knowledge,
+    generate_coverage_diagnostic_questions
+)
 from google.genai.errors import APIError
 
 # Load environment configuration
@@ -84,6 +102,26 @@ class ResetPasswordRequest(BaseModel):
 
 class PartitionUpdateRequest(BaseModel):
     partition: dict
+
+class SyllabusTextUploadRequest(BaseModel):
+    subject_name: str
+    subject_code: Optional[str] = ""
+    raw_text: str
+    original_filename: Optional[str] = "Pasted_Syllabus.txt"
+
+class HierarchyUpdateRequest(BaseModel):
+    hierarchy: dict
+
+class TopicCoverageItem(BaseModel):
+    topic_id: str
+    coverage_status: str  # 'completed', 'currently_studying', 'partially_covered', 'not_started'
+    is_current_focus: Optional[bool] = False
+
+class SaveCoverageRequest(BaseModel):
+    coverage: List[TopicCoverageItem]
+
+class ToggleTopicCompleteRequest(BaseModel):
+    completed: bool
 
 class TutorChatRequest(BaseModel):
     message: str
@@ -498,6 +536,408 @@ def tutor_chat_endpoint(req: TutorChatRequest, current_user: dict = Depends(get_
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"AI Tutor generation error: {str(exc)}"
         )
+
+# -------------------------------------------------------------
+# PART 5: SYLLABUS INGESTION & DECONSTRUCTION ENGINE
+# -------------------------------------------------------------
+
+@app.post("/api/syllabus/upload-file")
+async def upload_syllabus_file(
+    file: UploadFile = File(...),
+    subject_name: Optional[str] = Form(None),
+    subject_code: Optional[str] = Form(""),
+    current_user: dict = Depends(get_current_user)
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Currently, only PDF syllabus documents are supported."
+        )
+
+    try:
+        content = await file.read()
+        raw_text = extract_text_from_pdf(content)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to read and parse PDF: {str(e)}"
+        )
+
+    if not raw_text or len(raw_text.strip()) < 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The uploaded PDF does not contain sufficient text for curriculum extraction."
+        )
+
+    input_sub_name = subject_name.strip() if (subject_name and subject_name.strip() and subject_name.lower() not in ("undefined", "null")) else ""
+    input_sub_code = subject_code.strip() if (subject_code and subject_code.strip() and subject_code.lower() not in ("undefined", "null")) else ""
+
+    try:
+        hierarchy = extract_syllabus_hierarchy(
+            raw_text=raw_text,
+            subject_name=input_sub_name,
+            subject_code=input_sub_code,
+            filename=file.filename
+        )
+
+        final_subject_name = input_sub_name or hierarchy.get("subjectName") or "Subject Curriculum"
+        final_subject_code = input_sub_code or hierarchy.get("subjectCode") or "MOD-101"
+        brain_region = hierarchy.get("brainRegion", "Frontal Lobe (Reasoning & Cognition)")
+        subject_id = "sub_" + re.sub(r'[^a-zA-Z0-9]', '_', final_subject_name.strip().lower())
+
+        syllabus = create_or_update_syllabus(
+            user_id=current_user["id"],
+            subject_id=subject_id,
+            subject_name=final_subject_name,
+            subject_code=final_subject_code,
+            original_filename=file.filename,
+            raw_text=raw_text,
+            hierarchy_dict=hierarchy,
+            extraction_status="extracted"
+        )
+
+        # Sync the newly extracted subject into the student's personal partition so it reflects instantly across the UI
+        try:
+            partition_data = get_student_partition(current_user["id"])
+            if partition_data:
+                subjects_list = partition_data.get("subjects", [])
+                fe_units = []
+                for u in hierarchy.get("units", []):
+                    fe_topics = []
+                    for t in u.get("topics", []):
+                        fe_topics.append({
+                            "id": t.get("id"),
+                            "name": t.get("name"),
+                            "status": "not_assessed",
+                            "masteryScore": 0,
+                            "confidence": "none",
+                            "completed": False,
+                            "misconceptions": [],
+                            "concepts": [
+                                {
+                                    "id": f"c_{t.get('id')}_{i+1}",
+                                    "name": st,
+                                    "description": f"Subtopic of {t.get('name')}",
+                                    "masteryScore": 0,
+                                    "status": "not_assessed",
+                                    "confidence": "none"
+                                }
+                                for i, st in enumerate(t.get("subtopics", []))
+                            ] or [
+                                {
+                                    "id": f"c_{t.get('id')}_1",
+                                    "name": t.get("name"),
+                                    "description": "Core concept",
+                                    "masteryScore": 0,
+                                    "status": "not_assessed",
+                                    "confidence": "none"
+                                }
+                            ]
+                        })
+                    fe_units.append({
+                        "id": u.get("id"),
+                        "title": u.get("title"),
+                        "topics": fe_topics
+                    })
+
+                subj_idx = next((i for i, s in enumerate(subjects_list) if s.get("id") == subject_id), None)
+                new_fe_subj = {
+                    "id": subject_id,
+                    "name": final_subject_name,
+                    "code": final_subject_code,
+                    "status": "not_assessed",
+                    "masteryScore": 0,
+                    "confidence": "none",
+                    "color": "#38bdf8" if any(k in final_subject_name.lower() for k in ["java", "oop", "code", "python"]) else "#a855f7",
+                    "brainRegion": brain_region,
+                    "nodeCoordinates": [0.6, 0.2, 0.4],
+                    "totalTopics": sum(len(u["topics"]) for u in fe_units),
+                    "completedTopics": 0,
+                    "detectedMisconceptionsCount": 0,
+                    "recommendedNextConcept": f"Start foundational study on {fe_units[0]['topics'][0]['name'] if fe_units and fe_units[0]['topics'] else final_subject_name}",
+                    "units": fe_units
+                }
+
+                if subj_idx is not None:
+                    subjects_list[subj_idx] = new_fe_subj
+                else:
+                    subjects_list.append(new_fe_subj)
+
+                partition_data["subjects"] = subjects_list
+                save_student_partition(current_user["id"], partition_data)
+        except Exception as part_err:
+            print("Warning: unable to sync new syllabus to partition:", part_err)
+
+        return {
+            "success": True,
+            "message": "Syllabus extracted successfully.",
+            "syllabus": syllabus
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Syllabus extraction error: {str(exc)}"
+        )
+
+@app.post("/api/syllabus/upload-text")
+def upload_syllabus_text(
+    req: SyllabusTextUploadRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    text = req.raw_text.strip()
+    if len(text) < 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Syllabus text is too short. Please provide a complete curriculum outline."
+        )
+
+    subject_name = req.subject_name.strip()
+    subject_id = "sub_" + re.sub(r'[^a-zA-Z0-9]', '_', subject_name.lower())
+
+    try:
+        hierarchy = extract_syllabus_hierarchy(text, subject_name, req.subject_code.strip() if req.subject_code else "")
+        syllabus = create_or_update_syllabus(
+            user_id=current_user["id"],
+            subject_id=subject_id,
+            subject_name=subject_name,
+            subject_code=req.subject_code.strip() if req.subject_code else "",
+            original_filename=req.original_filename or "Pasted_Syllabus.txt",
+            raw_text=text,
+            hierarchy_dict=hierarchy,
+            extraction_status="extracted"
+        )
+        return {
+            "success": True,
+            "message": "Syllabus extracted successfully.",
+            "syllabus": syllabus
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Syllabus extraction error: {str(exc)}"
+        )
+
+@app.get("/api/syllabus")
+def list_student_syllabi(current_user: dict = Depends(get_current_user)):
+    """Returns all enrolled subject syllabi for the authenticated student."""
+    syllabi = get_syllabi_for_user(current_user["id"])
+    return {
+        "success": True,
+        "syllabi": syllabi
+    }
+
+@app.get("/api/syllabus/{syllabus_id}")
+def get_single_syllabus(syllabus_id: str, current_user: dict = Depends(get_current_user)):
+    syllabus = get_syllabus_by_id(syllabus_id)
+    if not syllabus:
+        raise HTTPException(status_code=404, detail="Syllabus record not found.")
+    if syllabus["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied to another student's syllabus.")
+    return {
+        "success": True,
+        "syllabus": syllabus
+    }
+
+@app.put("/api/syllabus/{syllabus_id}/hierarchy")
+def update_syllabus_hierarchy_endpoint(
+    syllabus_id: str,
+    req: HierarchyUpdateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Allows the student to review, add, edit, or remove extracted topics before knowledge synthesis."""
+    syllabus = get_syllabus_by_id(syllabus_id)
+    if not syllabus:
+        raise HTTPException(status_code=404, detail="Syllabus record not found.")
+    if syllabus["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    updated = update_syllabus_hierarchy(
+        syllabus_id=syllabus_id,
+        user_id=current_user["id"],
+        hierarchy_dict=req.hierarchy,
+        extraction_status="verified"
+    )
+    return {
+        "success": True,
+        "message": "Curriculum hierarchy updated and verified.",
+        "syllabus": updated
+    }
+
+@app.delete("/api/syllabus/{syllabus_id}")
+def delete_syllabus_endpoint(syllabus_id: str, current_user: dict = Depends(get_current_user)):
+    syllabus = get_syllabus_by_id(syllabus_id)
+    if not syllabus:
+        raise HTTPException(status_code=404, detail="Syllabus not found.")
+    if syllabus["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    success = delete_syllabus(syllabus_id, current_user["id"])
+    return {
+        "success": success,
+        "message": "Syllabus removed successfully."
+    }
+
+# -------------------------------------------------------------
+# PART 6: STUDENT SYLLABUS COVERAGE & ADAPTIVE DIAGNOSTICS
+# -------------------------------------------------------------
+
+@app.post("/api/syllabus/{subject_id}/coverage")
+def save_student_coverage_endpoint(
+    subject_id: str,
+    req: SaveCoverageRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Saves the student's self-reported coverage status (completed, currently_studying, partially_covered, not_started)
+    for each topic in the subject's curriculum.
+    """
+    for item in req.coverage:
+        save_student_topic_coverage_entry(
+            user_id=current_user["id"],
+            subject_id=subject_id,
+            topic_id=item.topic_id,
+            coverage_status=item.coverage_status,
+            is_current_focus=bool(item.is_current_focus)
+        )
+
+    # Sync into student partition
+    try:
+        partition_data = get_student_partition(current_user["id"])
+        if partition_data:
+            subjects_list = partition_data.get("subjects", [])
+            for subj in subjects_list:
+                if subj.get("id") == subject_id:
+                    completed_count = 0
+                    for u in subj.get("units", []):
+                        for t in u.get("topics", []):
+                            match = next((c for c in req.coverage if c.topic_id == t.get("id")), None)
+                            if match:
+                                t["completed"] = (match.coverage_status == "completed")
+                                if match.coverage_status == "completed":
+                                    t["status"] = "strong" if t.get("masteryScore", 0) > 80 else "developing"
+                                    completed_count += 1
+                                elif match.coverage_status == "not_started":
+                                    t["status"] = "not_assessed"
+                            elif t.get("completed"):
+                                completed_count += 1
+                    subj["completedTopics"] = completed_count
+                    total = subj.get("totalTopics", 1) or 1
+                    subj["masteryScore"] = round((completed_count / total) * 100) if completed_count > 0 else 0
+            save_student_partition(current_user["id"], partition_data)
+    except Exception as e:
+        print("Coverage partition sync notice:", e)
+
+    return {
+        "success": True,
+        "message": "Curriculum coverage updated.",
+        "coverage": get_student_topic_coverage_list(current_user["id"], subject_id)
+    }
+
+@app.get("/api/syllabus/{subject_id}/coverage")
+def get_student_coverage_endpoint(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Returns student topic coverage records for a subject."""
+    records = get_student_topic_coverage_list(current_user["id"], subject_id)
+    return {
+        "success": True,
+        "subject_id": subject_id,
+        "coverage": records
+    }
+
+@app.post("/api/syllabus/{subject_id}/topic/{topic_id}/complete")
+def toggle_topic_complete_endpoint(
+    subject_id: str,
+    topic_id: str,
+    req: ToggleTopicCompleteRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Enables the student to mark a topic as completed when they finish it.
+    Immediately updates the AI agent's memory so it knows the student completed it.
+    """
+    status_str = "completed" if req.completed else "not_started"
+    save_student_topic_coverage_entry(
+        user_id=current_user["id"],
+        subject_id=subject_id,
+        topic_id=topic_id,
+        coverage_status=status_str,
+        is_current_focus=False
+    )
+
+    try:
+        partition_data = get_student_partition(current_user["id"])
+        if partition_data:
+            subjects_list = partition_data.get("subjects", [])
+            for subj in subjects_list:
+                if subj.get("id") == subject_id:
+                    completed_count = 0
+                    for u in subj.get("units", []):
+                        for t in u.get("topics", []):
+                            if t.get("id") == topic_id:
+                                t["completed"] = req.completed
+                                t["status"] = "developing" if req.completed else "not_assessed"
+                            if t.get("completed"):
+                                completed_count += 1
+                    subj["completedTopics"] = completed_count
+                    total = subj.get("totalTopics", 1) or 1
+                    subj["masteryScore"] = round((completed_count / total) * 100) if completed_count > 0 else 0
+            save_student_partition(current_user["id"], partition_data)
+    except Exception as e:
+        print("Topic complete partition sync notice:", e)
+
+    return {
+        "success": True,
+        "message": f"Topic marked as {'completed' if req.completed else 'not started'}.",
+        "topic_id": topic_id,
+        "completed": req.completed
+    }
+
+@app.get("/api/assessment/{subject_id}/questions")
+def get_adaptive_diagnostic_questions(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Adaptive Diagnostic Engine:
+    - If student has covered topics: generates questions specifically from those topics.
+    - If student has not started any topic: generates foundational baseline aptitude questions.
+      CRITICAL: Never scores unstudied topics as zero failure!
+    """
+    syllabus = get_syllabus_by_subject(current_user["id"], subject_id)
+    coverage = get_student_topic_coverage_list(current_user["id"], subject_id)
+
+    hierarchy = None
+    subject_name = "Subject"
+    subject_code = "CS-101"
+    if syllabus and syllabus.get("hierarchy"):
+        hierarchy = syllabus["hierarchy"]
+        subject_name = syllabus.get("subject_name", "Subject")
+        subject_code = syllabus.get("subject_code", "MOD-101")
+    else:
+        partition_data = get_student_partition(current_user["id"])
+        if partition_data:
+            subj = next((s for s in partition_data.get("subjects", []) if s.get("id") == subject_id), None)
+            if subj:
+                subject_name = subj.get("name", "Subject")
+                subject_code = subj.get("code", "MOD-101")
+                hierarchy = {
+                    "subjectName": subject_name,
+                    "subjectCode": subject_code,
+                    "units": subj.get("units", [])
+                }
+
+    res = generate_coverage_diagnostic_questions(
+        subject_name=subject_name,
+        subject_code=subject_code,
+        hierarchy=hierarchy or {},
+        coverage_list=coverage
+    )
+    return {
+        "success": True,
+        "data": res
+    }
 
 if __name__ == "__main__":
     import uvicorn

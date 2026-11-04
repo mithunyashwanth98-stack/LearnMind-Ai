@@ -199,4 +199,180 @@ export async function apiTutorChat(
   return handleResponse(res);
 }
 
+// 10. Upload Syllabus PDF File
+export async function apiUploadSyllabusFile(
+  token: string,
+  file: File,
+  subjectName?: string,
+  subjectCode?: string
+): Promise<{
+  success: boolean;
+  message: string;
+  syllabus: any;
+}> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (subjectName) formData.append('subject_name', subjectName);
+  if (subjectCode) formData.append('subject_code', subjectCode);
+
+  const res = await fetch(`${API_BASE}/syllabus/upload-file`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+  return handleResponse(res);
+}
+
+// 11. Upload Raw Syllabus Text
+export async function apiUploadSyllabusText(
+  token: string,
+  rawText: string,
+  subjectName: string,
+  subjectCode?: string
+): Promise<{
+  success: boolean;
+  message: string;
+  syllabus: any;
+}> {
+  const res = await fetch(`${API_BASE}/syllabus/upload-text`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      raw_text: rawText,
+      subject_name: subjectName,
+      subject_code: subjectCode || '',
+    }),
+  });
+  return handleResponse(res);
+}
+
+// 12. List Enrolled Syllabi
+export async function apiGetSyllabi(token: string): Promise<{
+  success: boolean;
+  syllabi: any[];
+}> {
+  const res = await fetch(`${API_BASE}/syllabus`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  return handleResponse(res);
+}
+
+// 13. Update Syllabus Hierarchy
+export async function apiUpdateSyllabusHierarchy(
+  token: string,
+  syllabusId: string,
+  hierarchy: any
+): Promise<{
+  success: boolean;
+  message: string;
+  syllabus: any;
+}> {
+  const res = await fetch(`${API_BASE}/syllabus/${syllabusId}/hierarchy`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ hierarchy }),
+  });
+  return handleResponse(res);
+}
+
+// 14. Save Student Topic Coverage
+export interface TopicCoverageItemPayload {
+  topic_id: string;
+  coverage_status: 'completed' | 'currently_studying' | 'partially_covered' | 'not_started';
+  is_current_focus?: boolean;
+}
+
+export async function apiSaveTopicCoverage(
+  token: string,
+  subjectId: string,
+  coverage: TopicCoverageItemPayload[]
+): Promise<{
+  success: boolean;
+  message: string;
+  coverage: any[];
+}> {
+  const res = await fetch(`${API_BASE}/syllabus/${subjectId}/coverage`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ coverage }),
+  });
+  return handleResponse(res);
+}
+
+// 15. Get Student Topic Coverage
+export async function apiGetTopicCoverage(
+  token: string,
+  subjectId: string
+): Promise<{
+  success: boolean;
+  coverage: any[];
+}> {
+  const res = await fetch(`${API_BASE}/syllabus/${subjectId}/coverage`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  return handleResponse(res);
+}
+
+// 16. Toggle Topic Complete Status
+export async function apiToggleTopicComplete(
+  token: string,
+  subjectId: string,
+  topicId: string,
+  completed: boolean
+): Promise<{
+  success: boolean;
+  message: string;
+  topic_id: string;
+  completed: boolean;
+}> {
+  const res = await fetch(`${API_BASE}/syllabus/${subjectId}/topic/${topicId}/complete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ completed }),
+  });
+  return handleResponse(res);
+}
+
+// 17. Get Adaptive Diagnostic Assessment Questions
+export async function apiGetDiagnosticQuestions(
+  token: string,
+  subjectId: string
+): Promise<{
+  success: boolean;
+  data: {
+    isBaseline: boolean;
+    statusMessage: string;
+    evaluatedTopics: string[];
+    questions: any[];
+  };
+}> {
+  const res = await fetch(`${API_BASE}/assessment/${subjectId}/questions`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  return handleResponse(res);
+}
+
 

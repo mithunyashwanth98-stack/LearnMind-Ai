@@ -65,6 +65,58 @@ def init_db():
     )
     """)
 
+    # Subject Syllabi Table (Persistent per student, replaceable, multi-subject)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS subject_syllabi (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        subject_name TEXT NOT NULL,
+        subject_code TEXT,
+        original_filename TEXT,
+        raw_text TEXT NOT NULL,
+        hierarchy_json TEXT,
+        extraction_status TEXT DEFAULT 'uploaded',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+    """)
+
+    # Topic Knowledge Base Table (Caches the 8 elements per topic)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS topic_knowledge_base (
+        id TEXT PRIMARY KEY,
+        syllabus_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        topic_id TEXT NOT NULL,
+        topic_name TEXT NOT NULL,
+        unit_title TEXT,
+        priority_level INTEGER DEFAULT 2,
+        status TEXT DEFAULT 'pending',
+        knowledge_json TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (syllabus_id) REFERENCES subject_syllabi (id) ON DELETE CASCADE
+    )
+    """)
+
+    # Student Topic Coverage Table (Tracks self-reported progress separate from test performance)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS student_topic_coverage (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        topic_id TEXT NOT NULL,
+        coverage_status TEXT NOT NULL,
+        is_current_focus INTEGER DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+        UNIQUE(user_id, subject_id, topic_id)
+    )
+    """)
+
     conn.commit()
 
     # Seed demo student if not present
@@ -345,4 +397,292 @@ def save_student_partition(user_id: str, data: dict):
     )
     conn.commit()
     conn.close()
+
+# -------------------------------------------------------------
+# Syllabus & Knowledge Base Operations
+# -------------------------------------------------------------
+
+def create_or_update_syllabus(
+    user_id: str,
+    subject_id: str,
+    subject_name: str,
+    subject_code: str,
+    original_filename: str,
+    raw_text: str,
+    hierarchy_dict: dict = None,
+    extraction_status: str = "uploaded"
+) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Check if a syllabus already exists for this subject & user
+    cursor.execute(
+        "SELECT id FROM subject_syllabi WHERE user_id = ? AND subject_id = ?",
+        (user_id, subject_id)
+    )
+    existing = cursor.fetchone()
+
+    hierarchy_json = json.dumps(hierarchy_dict) if hierarchy_dict else None
+
+    if existing:
+        syllabus_id = existing["id"]
+        cursor.execute(
+            """
+            UPDATE subject_syllabi
+            SET subject_name = ?, subject_code = ?, original_filename = ?,
+                raw_text = ?, hierarchy_json = COALESCE(?, hierarchy_json),
+                extraction_status = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (
+                subject_name, subject_code, original_filename,
+                raw_text, hierarchy_json, extraction_status, now_iso,
+                syllabus_id, user_id
+            )
+        )
+    else:
+        syllabus_id = f"syl_{uuid.uuid4().hex[:12]}"
+        cursor.execute(
+            """
+            INSERT INTO subject_syllabi (
+                id, user_id, subject_id, subject_name, subject_code,
+                original_filename, raw_text, hierarchy_json, extraction_status,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                syllabus_id, user_id, subject_id, subject_name, subject_code,
+                original_filename, raw_text, hierarchy_json, extraction_status,
+                now_iso, now_iso
+            )
+        )
+
+    conn.commit()
+    conn.close()
+    return get_syllabus_by_id(syllabus_id)
+
+def get_syllabus_by_id(syllabus_id: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM subject_syllabi WHERE id = ?", (syllabus_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    if d.get("hierarchy_json"):
+        try:
+            d["hierarchy"] = json.loads(d["hierarchy_json"])
+        except Exception:
+            d["hierarchy"] = None
+    else:
+        d["hierarchy"] = None
+    return d
+
+def get_syllabi_for_user(user_id: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM subject_syllabi WHERE user_id = ? ORDER BY updated_at DESC", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    res = []
+    for r in rows:
+        d = dict(r)
+        if d.get("hierarchy_json"):
+            try:
+                d["hierarchy"] = json.loads(d["hierarchy_json"])
+            except Exception:
+                d["hierarchy"] = None
+        else:
+            d["hierarchy"] = None
+        res.append(d)
+    return res
+
+def get_syllabus_by_subject(user_id: str, subject_id: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM subject_syllabi WHERE user_id = ? AND subject_id = ?",
+        (user_id, subject_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    if d.get("hierarchy_json"):
+        try:
+            d["hierarchy"] = json.loads(d["hierarchy_json"])
+        except Exception:
+            d["hierarchy"] = None
+    else:
+        d["hierarchy"] = None
+    return d
+
+def delete_syllabus(syllabus_id: str, user_id: str) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM subject_syllabi WHERE id = ? AND user_id = ?", (syllabus_id, user_id))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+def update_syllabus_hierarchy(syllabus_id: str, user_id: str, hierarchy_dict: dict, extraction_status: str = "extracted"):
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        """
+        UPDATE subject_syllabi
+        SET hierarchy_json = ?, extraction_status = ?, updated_at = ?
+        WHERE id = ? AND user_id = ?
+        """,
+        (json.dumps(hierarchy_dict), extraction_status, now_iso, syllabus_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+    return get_syllabus_by_id(syllabus_id)
+
+def save_topic_knowledge_entry(
+    syllabus_id: str,
+    subject_id: str,
+    topic_id: str,
+    topic_name: str,
+    unit_title: str,
+    priority_level: int = 2,
+    status: str = "pending",
+    knowledge_dict: dict = None,
+    error_message: str = None
+) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    entry_id = f"tk_{uuid.uuid4().hex[:12]}"
+
+    cursor.execute(
+        "SELECT id FROM topic_knowledge_base WHERE syllabus_id = ? AND topic_id = ?",
+        (syllabus_id, topic_id)
+    )
+    existing = cursor.fetchone()
+
+    knowledge_json = json.dumps(knowledge_dict) if knowledge_dict else None
+
+    if existing:
+        entry_id = existing["id"]
+        cursor.execute(
+            """
+            UPDATE topic_knowledge_base
+            SET topic_name = ?, unit_title = ?, priority_level = ?,
+                status = ?, knowledge_json = COALESCE(?, knowledge_json),
+                error_message = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                topic_name, unit_title, priority_level, status,
+                knowledge_json, error_message, now_iso, entry_id
+            )
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO topic_knowledge_base (
+                id, syllabus_id, subject_id, topic_id, topic_name,
+                unit_title, priority_level, status, knowledge_json,
+                error_message, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry_id, syllabus_id, subject_id, topic_id, topic_name,
+                unit_title, priority_level, status, knowledge_json,
+                error_message, now_iso, now_iso
+            )
+        )
+
+    conn.commit()
+    conn.close()
+    return get_topic_knowledge_entry(syllabus_id, topic_id)
+
+def get_topic_knowledge_entry(syllabus_id: str, topic_id: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM topic_knowledge_base WHERE syllabus_id = ? AND topic_id = ?",
+        (syllabus_id, topic_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    if d.get("knowledge_json"):
+        try:
+            d["knowledge"] = json.loads(d["knowledge_json"])
+        except Exception:
+            d["knowledge"] = None
+    else:
+        d["knowledge"] = None
+    return d
+
+def get_all_topic_knowledge_for_syllabus(syllabus_id: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM topic_knowledge_base WHERE syllabus_id = ? ORDER BY priority_level ASC, created_at ASC",
+        (syllabus_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    res = []
+    for r in rows:
+        d = dict(r)
+        if d.get("knowledge_json"):
+            try:
+                d["knowledge"] = json.loads(d["knowledge_json"])
+            except Exception:
+                d["knowledge"] = None
+        else:
+            d["knowledge"] = None
+        res.append(d)
+    return res
+
+def save_student_topic_coverage_entry(
+    user_id: str,
+    subject_id: str,
+    topic_id: str,
+    coverage_status: str,
+    is_current_focus: bool = False
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    entry_id = f"cov_{uuid.uuid4().hex[:12]}"
+    focus_int = 1 if is_current_focus else 0
+
+    cursor.execute(
+        """
+        INSERT INTO student_topic_coverage (
+            id, user_id, subject_id, topic_id, coverage_status, is_current_focus, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, subject_id, topic_id) DO UPDATE SET
+            coverage_status = excluded.coverage_status,
+            is_current_focus = excluded.is_current_focus,
+            updated_at = excluded.updated_at
+        """,
+        (entry_id, user_id, subject_id, topic_id, coverage_status, focus_int, now_iso)
+    )
+    conn.commit()
+    conn.close()
+
+def get_student_topic_coverage_list(user_id: str, subject_id: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM student_topic_coverage WHERE user_id = ? AND subject_id = ?",
+        (user_id, subject_id)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 

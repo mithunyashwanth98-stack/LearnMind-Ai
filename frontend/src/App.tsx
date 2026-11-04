@@ -289,6 +289,8 @@ export function App() {
                 subjects={subjects}
                 onAddSubject={handleAddSubject}
                 onUpdateSubject={handleUpdateSubject}
+                sessionToken={token}
+                onNavigateToAssessment={(subjId) => handleLaunchAssessment(subjId)}
               />
             )}
 
@@ -297,6 +299,7 @@ export function App() {
                 subjects={subjects}
                 onCompleteAssessment={handleCompleteAssessment}
                 onNavigateToTutor={() => setActiveSection('tutor')}
+                sessionToken={token}
               />
             )}
 
