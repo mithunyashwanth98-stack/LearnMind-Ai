@@ -169,3 +169,34 @@ export async function apiUpdatePartition(token: string, partition: StudentDataPa
   } catch {}
 }
 
+export interface TutorChatResponse {
+  reply: string;
+  suggestedActions: string[];
+  model: string;
+}
+
+// 9. Send question to Gemini AI Tutor
+export async function apiTutorChat(
+  token: string,
+  message: string,
+  topic?: string,
+  subject?: string,
+  history?: Array<{ sender: 'user' | 'tutor'; text: string }>
+): Promise<TutorChatResponse> {
+  const res = await fetch(`${API_BASE}/tutor/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      message,
+      topic,
+      subject,
+      history,
+    }),
+  });
+  return handleResponse(res);
+}
+
+

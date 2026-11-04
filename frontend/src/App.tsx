@@ -50,6 +50,7 @@ export function App() {
   const [student, setStudent] = useState<StudentProfile>(initialStudent);
   const [misconceptions, setMisconceptions] = useState<Misconception[]>(sampleMisconceptions);
   const [learningPath, setLearningPath] = useState<LearningPathStep[]>(sampleLearningPath);
+  const [tutorMessages, setTutorMessages] = useState<any[]>([]);
   const [isKnowledgeModalOpen, setIsKnowledgeModalOpen] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(sampleSubjects[0]);
   const [tutorInitialTopic, setTutorInitialTopic] = useState('Differentiation & Power Rule');
@@ -70,6 +71,9 @@ export function App() {
               setSubjects(res.partition.subjects);
               setMisconceptions(res.partition.misconceptions);
               setLearningPath(res.partition.learningPath);
+              if (res.partition.tutorMessages) {
+                setTutorMessages(res.partition.tutorMessages);
+              }
               setIsAuthenticated(true);
             } else {
               handleLogout();
@@ -85,6 +89,9 @@ export function App() {
                 setSubjects(partition.subjects);
                 setMisconceptions(partition.misconceptions);
                 setLearningPath(partition.learningPath);
+                if (partition.tutorMessages) {
+                  setTutorMessages(partition.tutorMessages);
+                }
                 setIsAuthenticated(true);
                 return;
               }
@@ -102,19 +109,21 @@ export function App() {
     updatedProfile?: StudentProfile,
     updatedSubjects?: Subject[],
     updatedMisconceptions?: Misconception[],
-    updatedPath?: LearningPathStep[]
+    updatedPath?: LearningPathStep[],
+    updatedMessages?: any[]
   ) => {
     const prof = updatedProfile || student;
     const subs = updatedSubjects || subjects;
     const miscs = updatedMisconceptions || misconceptions;
     const path = updatedPath || learningPath;
+    const msgs = updatedMessages !== undefined ? updatedMessages : tutorMessages;
 
     const dataToSave: StudentDataPartition = {
       profile: prof,
       subjects: subs,
       misconceptions: miscs,
       learningPath: path,
-      tutorMessages: [],
+      tutorMessages: msgs,
     };
 
     saveStudentPartition(prof.id, dataToSave);
@@ -135,6 +144,7 @@ export function App() {
     setSubjects(partition.subjects);
     setMisconceptions(partition.misconceptions);
     setLearningPath(partition.learningPath);
+    setTutorMessages(partition.tutorMessages || []);
     setIsAuthenticated(true);
     setActiveSection('dashboard');
     setBrainMode('compact');
@@ -296,6 +306,12 @@ export function App() {
                 misconceptions={misconceptions}
                 initialTopic={tutorInitialTopic}
                 studentName={student.name}
+                initialMessages={tutorMessages}
+                sessionToken={token}
+                onSaveMessages={(msgs) => {
+                  setTutorMessages(msgs);
+                  persistPartition(undefined, undefined, undefined, undefined, msgs);
+                }}
               />
             )}
 

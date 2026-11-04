@@ -1,8 +1,9 @@
 import os
+import time
 import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Header, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -28,6 +29,8 @@ from database import (
     save_student_partition
 )
 from email_service import send_password_reset_email
+from tutor_service import generate_tutor_response
+from google.genai.errors import APIError
 
 # Load environment configuration
 env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -82,6 +85,15 @@ class ResetPasswordRequest(BaseModel):
 class PartitionUpdateRequest(BaseModel):
     partition: dict
 
+class TutorChatRequest(BaseModel):
+    message: str
+    topic: Optional[str] = None
+    subject: Optional[str] = None
+    history: Optional[List[Dict[str, Any]]] = None
+
+# In-memory rate limiting map: user_id -> last_timestamp
+user_last_tutor_request: Dict[str, float] = {}
+
 # Dependency: Authenticated User
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -118,7 +130,11 @@ def health_check():
         "brevo_configured": bool(
             (os.getenv("BREVO_SMTP_KEY") or os.getenv("BREVO_API_KEY")) and 
             (os.getenv("BREVO_SMTP_LOGIN") or os.getenv("BREVO_SENDER_EMAIL"))
-        )
+        ),
+        "gemini_configured": bool(
+            os.getenv("GEMINI_API_KEY") and os.getenv("GEMINI_API_KEY") != "your_gemini_api_key_here"
+        ),
+        "gemini_model": os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
     }
 
 # PART 1: REGISTRATION FLOW
@@ -410,6 +426,78 @@ def logout_student(authorization: Optional[str] = Header(None)):
 def update_partition(req: PartitionUpdateRequest, current_user: dict = Depends(get_current_user)):
     save_student_partition(current_user["id"], req.partition)
     return {"success": True, "message": "Partition saved successfully."}
+
+# PART 4: GEMINI AI TUTOR INTERACTION
+@app.post("/api/tutor/chat")
+def tutor_chat_endpoint(req: TutorChatRequest, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    query = req.message.strip()
+
+    if not query:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Question cannot be empty."
+        )
+    if len(query) > 2500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Question exceeds maximum length of 2500 characters."
+        )
+
+    # Rate limiting: 1.0s cooldown per student to prevent rapid double-clicks
+    now = time.time()
+    last_req_time = user_last_tutor_request.get(user_id, 0)
+    if now - last_req_time < 1.0:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Tutor is currently synthesizing knowledge. Please wait a brief moment before sending another query."
+        )
+    user_last_tutor_request[user_id] = now
+
+    # Retrieve authentic student partition from database (user-isolated)
+    partition = get_student_partition(user_id) or {}
+
+    try:
+        result = generate_tutor_response(
+            user_message=query,
+            student_name=current_user.get("name", "Student"),
+            subject=req.subject,
+            topic=req.topic,
+            partition=partition,
+            history=req.history
+        )
+        return result
+    except APIError as api_err:
+        if api_err.code in (401, 403):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Gemini API authentication rejected. Please verify GEMINI_API_KEY in backend/.env."
+            )
+        elif api_err.code == 429:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Gemini API quota or rate limit exceeded. Please wait a moment and try again."
+            )
+        elif api_err.code in (503, 504):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Gemini AI model is temporarily experiencing high demand. Please try again shortly."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Gemini API error ({api_err.code}): {api_err.message}"
+            )
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(val_err)
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"AI Tutor generation error: {str(exc)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn

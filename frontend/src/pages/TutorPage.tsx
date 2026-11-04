@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Subject, Misconception } from '../types';
 import { HolographicCore, TutorState } from '../components/HolographicCore';
+import { apiTutorChat } from '../services/api';
 import {
   Mic,
   MicOff,
@@ -18,7 +19,8 @@ import {
   Activity,
   CheckCircle2,
   Cpu,
-  Layers
+  Layers,
+  RotateCcw
 } from 'lucide-react';
 
 interface ChatMessage {
@@ -35,6 +37,9 @@ interface TutorPageProps {
   initialTopic?: string;
   studentName?: string;
   onUpdateMisconception?: (misconceptionId: string) => void;
+  initialMessages?: ChatMessage[];
+  sessionToken?: string;
+  onSaveMessages?: (messages: ChatMessage[]) => void;
 }
 
 export const TutorPage: React.FC<TutorPageProps> = ({
@@ -42,24 +47,35 @@ export const TutorPage: React.FC<TutorPageProps> = ({
   misconceptions,
   initialTopic = 'Differentiation & Power Rule',
   studentName = 'Student',
+  initialMessages,
+  sessionToken,
+  onSaveMessages,
 }) => {
   const [tutorState, setTutorState] = useState<TutorState>('idle');
   const [voiceIntensity, setVoiceIntensity] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string>('');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'm1',
-      sender: 'tutor',
-      text: `Greetings, ${studentName}. I am your LearnMind AI Holo-Tutor. I see your active focus is on ${initialTopic}. How can I guide your conceptual understanding today?`,
-      timestamp: 'Just now',
-      suggestedActions: [
-        'Explain the Power Rule step-by-step',
-        'Why does d/dx(5x) equal 5 and not 0?',
-        'Give me a real-world example of derivatives',
-        'Generate a practice question for me',
-      ],
-    },
-  ]);
+  const [lastFailedQuery, setLastFailedQuery] = useState<string | null>(null);
+  const [modelBadge, setModelBadge] = useState<string>('GEMINI 3 FLASH');
+
+  const defaultGreeting: ChatMessage = {
+    id: 'm1',
+    sender: 'tutor',
+    text: `Greetings, ${studentName}. I am your LearnMind AI Holo-Tutor powered by Gemini. I see your active focus is on ${initialTopic}. How can I guide your conceptual understanding today?`,
+    timestamp: 'Just now',
+    suggestedActions: [
+      'Explain the Power Rule step-by-step',
+      'Why does d/dx(5x) equal 5 and not 0?',
+      'Give me a beginner practice problem',
+      'Explain with a real-world analogy',
+    ],
+  };
+
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    if (initialMessages && initialMessages.length > 0) {
+      return initialMessages;
+    }
+    return [defaultGreeting];
+  });
   const [inputText, setInputText] = useState('');
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [speechSynthesisActive, setSpeechSynthesisActive] = useState(false);
@@ -302,8 +318,8 @@ export const TutorPage: React.FC<TutorPageProps> = ({
     }
   };
 
-  // Question Submission and AI Reasoning
-  const handleSendMessage = (textToSend?: string) => {
+  // Question Submission to Gemini AI Tutor
+  const handleSendMessage = async (textToSend?: string) => {
     const query = (textToSend !== undefined ? textToSend : inputText).trim();
     if (!query) return;
 
@@ -321,95 +337,79 @@ export const TutorPage: React.FC<TutorPageProps> = ({
       timestamp: 'Just now',
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    const updated = [...messages, userMsg];
+    setMessages(updated);
     setInputText('');
     setTutorState('thinking');
+    setErrorMessage('');
+    setLastFailedQuery(null);
 
-    // Simulate intelligent pedagogical reasoning
-    setTimeout(() => {
-      let reply = '';
-      let suggestions: string[] = [];
-      const lower = query.toLowerCase();
+    const token =
+      sessionToken ||
+      sessionStorage.getItem('learnmind_session_token') ||
+      localStorage.getItem('learnmind_session_token') ||
+      '';
 
-      if (lower.includes('power rule') || lower.includes('exponent')) {
-        reply =
-          "Let's break down the Power Rule step by step:\n\n1. Formula: d/dx(xⁿ) = n · xⁿ⁻¹.\n2. The Two Golden Actions: First, bring the current exponent n to the front as a multiplier. Second, subtract exactly 1 from the exponent.\n\nExample:\nFor x³, bring 3 down: 3 · x^(3-1) = 3x².\nThe common pitfall (which our diagnostic identified) is multiplying by 3 but forgetting to reduce the exponent to 2! Always verify the exponent drops by 1.";
-        suggestions = [
-          'Give me a practice problem on this',
-          'Why does d/dx(5x) equal 5 and not 0?',
-          'Explain the Constant Multiple Rule next',
-        ];
-      } else if (
-        lower.includes('5x') ||
-        lower.includes('constant multiple') ||
-        lower.includes('zero')
-      ) {
-        reply =
-          "Great question! Why is d/dx(5x) = 5 and not 0?\n\nBecause 5 is a constant MULTIPLE attached to the variable x, not a standalone constant.\n\n• Standalone constant: d/dx(5) = 0 (because the number 5 never changes rate).\n• Constant multiple: d/dx(5 · x) = 5 · d/dx(x) = 5 · 1 = 5.\n\nThink of it visually: y = 5x is a straight line with a constant steep slope of 5. The derivative measures slope, so the slope is always 5!";
-        suggestions = [
-          'Differentiate 7x + 12',
-          'How does this combine with the Sum Rule?',
-          'Test me with a quiz',
-        ];
-      } else if (
-        lower.includes('practice') ||
-        lower.includes('question') ||
-        lower.includes('quiz')
-      ) {
-        reply =
-          "Here is your personalized practice challenge:\n\nDifferentiate f(x) = 3x⁴ - 6x + 9 with respect to x.\n\nTake your time. Identify the power rule for the first term, constant multiple rule for the second term, and constant rule for the last term.";
-        suggestions = [
-          'The answer is 12x³ - 6',
-          'The answer is 12x⁴ - 6',
-          'Walk me through the first step',
-        ];
-      } else if (lower.includes('12x³ - 6') || lower.includes('12x^3 - 6')) {
-        reply =
-          'Outstanding work! 🎯 12x³ - 6 is 100% correct.\n\n• d/dx(3x⁴) = 3 · 4x³ = 12x³\n• d/dx(-6x) = -6 · 1 = -6\n• d/dx(9) = 0\n\nYou applied both the power rule reduction and constant rules flawlessly. Your Bayesian mastery confidence has increased!';
-        suggestions = [
-          'Move on to Product Rule',
-          'Explain Chain Rule',
-          'Update my Knowledge Matrix',
-        ];
-      } else {
-        reply = `Understood. Analyzing "${query}" in the context of ${currentTopic}.\n\nIn differential calculus, every operation builds strictly upon prerequisite algebraic foundations. Would you like me to explain this concept from first principles with a simple analogy, or demonstrate with a worked mathematical proof?`;
-        suggestions = [
-          'Explain with a simple analogy',
-          'Show a worked mathematical example',
-          'How does this relate to my syllabus?',
-        ];
+    try {
+      const historyPayload = messages.slice(-8).map((m) => ({
+        sender: m.sender,
+        text: m.text,
+      }));
+
+      const activeSub =
+        subjects.find(
+          (s) =>
+            s.name.toLowerCase() === currentTopic.toLowerCase() ||
+            s.units?.some((u) => u.topics.includes(currentTopic))
+        ) || subjects[0];
+
+      const res = await apiTutorChat(
+        token,
+        query,
+        currentTopic,
+        activeSub?.name,
+        historyPayload
+      );
+
+      if (res.model) {
+        setModelBadge(res.model.replace('models/', '').toUpperCase());
       }
 
       const tutorMsg: ChatMessage = {
         id: `t_${Date.now()}`,
         sender: 'tutor',
-        text: reply,
+        text: res.reply,
         timestamp: 'Just now',
-        suggestedActions: suggestions,
+        suggestedActions: res.suggestedActions,
       };
 
-      setMessages((prev) => [...prev, tutorMsg]);
-      speakText(reply);
-    }, 1200);
+      const finalMessages = [...updated, tutorMsg];
+      setMessages(finalMessages);
+      setTutorState('idle');
+      speakText(res.reply);
+
+      if (onSaveMessages) {
+        onSaveMessages(finalMessages);
+      }
+    } catch (err: any) {
+      const errDetail = err.message || 'Unable to connect to Gemini AI Tutor. Please try again.';
+      setErrorMessage(errDetail);
+      setTutorState('error');
+      setLastFailedQuery(query);
+    }
   };
 
   const handleClearChat = () => {
     stopSpeaking();
     stopAudioStream();
     setTutorState('idle');
-    setMessages([
-      {
-        id: 'm_init',
-        sender: 'tutor',
-        text: `Holographic session cleared. Ready for your next concept query on ${currentTopic}.`,
-        timestamp: 'Just now',
-        suggestedActions: [
-          'Explain Power Rule',
-          'Test my understanding',
-          'Show prerequisite dependencies',
-        ],
-      },
-    ]);
+    setErrorMessage('');
+    setLastFailedQuery(null);
+    const reset = [defaultGreeting];
+    setMessages(reset);
+    if (onSaveMessages) {
+      onSaveMessages(reset);
+    }
   };
 
   return (
@@ -432,7 +432,7 @@ export const TutorPage: React.FC<TutorPageProps> = ({
               <div className="text-sm font-black text-white tracking-widest flex items-center gap-2">
                 <span>LEARNMIND AI TUTOR</span>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-400/40 text-cyan-400">
-                  JARVIS ENGINE v2.5
+                  {modelBadge}
                 </span>
               </div>
               <div className="text-[10px] font-mono tracking-widest text-cyan-400/80 uppercase">
@@ -588,6 +588,31 @@ export const TutorPage: React.FC<TutorPageProps> = ({
 
         {/* Bottom Typing & Voice Command Station */}
         <div className="p-4 border-t border-cyan-500/20 bg-slate-950/90 space-y-2 shrink-0">
+          {/* Error Banner with Retry button */}
+          {errorMessage && (
+            <div className="flex items-center justify-between p-3 rounded-2xl bg-red-950/80 border border-red-500/50 text-red-300 text-xs font-mono shadow-[0_0_20px_rgba(239,68,68,0.25)] animate-fadeIn">
+              <div className="flex items-center gap-2 overflow-hidden">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 animate-pulse" />
+                <span className="truncate">{errorMessage}</span>
+              </div>
+              {lastFailedQuery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const retryText = lastFailedQuery;
+                    setErrorMessage('');
+                    setLastFailedQuery(null);
+                    handleSendMessage(retryText);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-red-900/90 hover:bg-red-800 border border-red-400 text-white text-[10px] font-bold uppercase tracking-wider transition-all duration-200 cursor-pointer shrink-0 ml-2 flex items-center gap-1"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Retry</span>
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="relative">
             <textarea
               rows={2}
