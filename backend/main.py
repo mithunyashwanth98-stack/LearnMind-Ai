@@ -114,7 +114,10 @@ def health_check():
         "status": "online",
         "service": "LearnMind AI Backend API",
         "database": "SQLite (learnmind.db)",
-        "brevo_configured": bool(os.getenv("BREVO_API_KEY") and os.getenv("BREVO_SENDER_EMAIL"))
+        "brevo_configured": bool(
+            (os.getenv("BREVO_SMTP_KEY") or os.getenv("BREVO_API_KEY")) and 
+            (os.getenv("BREVO_SMTP_LOGIN") or os.getenv("BREVO_SENDER_EMAIL"))
+        )
     }
 
 # PART 1: REGISTRATION FLOW
