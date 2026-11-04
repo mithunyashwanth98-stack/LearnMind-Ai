@@ -1,35 +1,21 @@
 import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import httpx
 from dotenv import load_dotenv
 
-# Load environment variables from backend/.env
+# Load environment configuration from backend/.env
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=env_path)
 
-BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
+BREVO_REST_API_URL = "https://api.brevo.com/v3/smtp/email"
+BREVO_SMTP_SERVER = os.getenv("BREVO_SMTP_SERVER", "smtp-relay.brevo.com")
+BREVO_SMTP_PORT = int(os.getenv("BREVO_SMTP_PORT", "587"))
 
-def send_password_reset_email(to_email: str, recipient_name: str, otp: str) -> dict:
-    """
-    Sends a professional transactional password reset verification code email via Brevo.
-    """
-    api_key = os.getenv("BREVO_API_KEY", "").strip()
-    sender_email = os.getenv("BREVO_SENDER_EMAIL", "").strip()
-    sender_name = os.getenv("BREVO_SENDER_NAME", "LearnMind AI").strip()
-
-    if not api_key:
-        raise ValueError(
-            "BREVO_API_KEY is not configured in backend/.env. "
-            "Please provide your Brevo API key in backend/.env to send real OTP verification emails."
-        )
-
-    if not sender_email:
-        raise ValueError(
-            "BREVO_SENDER_EMAIL is not configured in backend/.env. "
-            "Please provide your verified Brevo sender email address in backend/.env."
-        )
-
-    # Professional Cyberpunk / Clean Futuristic HTML Email Template
-    html_content = f"""<!DOCTYPE html>
+def generate_email_html(recipient_name: str, otp: str) -> str:
+    """Generates the requested professional HTML email template."""
+    return f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -44,18 +30,12 @@ def send_password_reset_email(to_email: str, recipient_name: str, otp: str) -> d
           <!-- Header Banner -->
           <tr>
             <td style="padding: 32px 32px 20px 32px; background: linear-gradient(135deg, rgba(0, 240, 255, 0.12) 0%, rgba(168, 85, 247, 0.08) 100%); border-bottom: 1px solid rgba(0, 240, 255, 0.15);">
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td>
-                    <div style="font-size: 20px; font-weight: 900; color: #ffffff; letter-spacing: 1px;">
-                      LearnMind <span style="display: inline-block; padding: 2px 8px; font-size: 11px; font-family: monospace; color: #00f0ff; background-color: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); border-radius: 6px;">AI</span>
-                    </div>
-                    <div style="font-size: 10px; font-family: monospace; color: #38bdf8; letter-spacing: 2px; text-transform: uppercase; margin-top: 4px;">
-                      Cognitive Architecture • Security Verification
-                    </div>
-                  </td>
-                </tr>
-              </table>
+              <div style="font-size: 20px; font-weight: 900; color: #ffffff; letter-spacing: 1px;">
+                LearnMind <span style="display: inline-block; padding: 2px 8px; font-size: 11px; font-family: monospace; color: #00f0ff; background-color: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); border-radius: 6px;">AI</span>
+              </div>
+              <div style="font-size: 10px; font-family: monospace; color: #38bdf8; letter-spacing: 2px; text-transform: uppercase; margin-top: 4px;">
+                Cognitive Architecture • Security Verification
+              </div>
             </td>
           </tr>
 
@@ -117,43 +97,99 @@ def send_password_reset_email(to_email: str, recipient_name: str, otp: str) -> d
 </html>
 """
 
-    payload = {
-        "sender": {
-            "name": sender_name,
-            "email": sender_email,
-        },
-        "to": [
-            {
-                "email": to_email,
-                "name": recipient_name or "Student",
-            }
-        ],
-        "subject": "LearnMind AI - Password Reset Verification Code",
-        "htmlContent": html_content,
-    }
+def send_password_reset_email(to_email: str, recipient_name: str, otp: str) -> dict:
+    """
+    Sends transactional password reset verification code email using Brevo.
+    Supports both:
+    1. Brevo SMTP Relay protocol (for xsmtpsib-... keys).
+    2. Brevo REST API v3 protocol (for xkeysib-... keys).
+    """
+    smtp_key = os.getenv("BREVO_SMTP_KEY", "").strip() or os.getenv("BREVO_API_KEY", "").strip()
+    api_key = os.getenv("BREVO_API_KEY", "").strip()
+    sender_email = os.getenv("BREVO_SENDER_EMAIL", "").strip()
+    sender_name = os.getenv("BREVO_SENDER_NAME", "LearnMind AI").strip()
+    smtp_login = os.getenv("BREVO_SMTP_LOGIN", "").strip() or sender_email
 
-    headers = {
-        "api-key": api_key,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+    html_content = generate_email_html(recipient_name, otp)
 
-    try:
-        with httpx.Client(timeout=15.0) as client:
-            response = client.post(BREVO_API_URL, json=payload, headers=headers)
+    # MODE A: If key starts with 'xsmtpsib-', use Brevo SMTP Relay
+    if smtp_key.startswith("xsmtpsib-"):
+        if not smtp_login:
+            raise ValueError(
+                "You are using a Brevo SMTP key (xsmtpsib-...). "
+                "Please configure BREVO_SMTP_LOGIN in backend/.env with your Brevo account login email "
+                "(found in Brevo under 'SMTP & API' -> 'Login', usually your registered account email)."
+            )
+        if not sender_email:
+            sender_email = smtp_login
 
-            if response.status_code in (200, 201, 202):
-                return response.json()
-            else:
-                error_body = response.text
-                try:
-                    err_json = response.json()
-                    err_msg = err_json.get("message") or err_json.get("code") or error_body
-                except Exception:
-                    err_msg = error_body
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "LearnMind AI - Password Reset Verification Code"
+        msg["From"] = f"{sender_name} <{sender_email}>"
+        msg["To"] = to_email
 
-                raise RuntimeError(
-                    f"Brevo API rejected email delivery (HTTP {response.status_code}): {err_msg}"
-                )
-    except httpx.RequestError as exc:
-        raise RuntimeError(f"Network error connecting to Brevo API: {exc}")
+        # Attach plain text fallback + HTML
+        text_plain = (
+            f"Hello,\n\n"
+            f"We received a request to reset your LearnMind AI account password.\n\n"
+            f"Your verification code is: {otp}\n\n"
+            f"This code expires in 5 minutes.\n\n"
+            f"If you did not request this password reset, you can ignore this email.\n\n"
+            f"Regards,\nLearnMind AI Team"
+        )
+        msg.attach(MIMEText(text_plain, "plain"))
+        msg.attach(MIMEText(html_content, "html"))
+
+        try:
+            with smtplib.SMTP(BREVO_SMTP_SERVER, BREVO_SMTP_PORT, timeout=15) as server:
+                server.ehlo()
+                server.starttls()
+                server.login(smtp_login, smtp_key)
+                server.send_message(msg)
+            return {"success": True, "method": "smtp", "recipient": to_email}
+        except smtplib.SMTPAuthenticationError as auth_err:
+            raise RuntimeError(
+                f"Brevo SMTP authentication rejected for user '{smtp_login}'. "
+                f"Please ensure BREVO_SMTP_LOGIN in backend/.env matches your Brevo login email. Details: {auth_err}"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Brevo SMTP delivery failed: {e}")
+
+    # MODE B: If key starts with 'xkeysib-', use Brevo REST API v3
+    elif api_key.startswith("xkeysib-"):
+        if not sender_email:
+            raise ValueError("BREVO_SENDER_EMAIL is required in backend/.env for Brevo REST API.")
+
+        payload = {
+            "sender": {"name": sender_name, "email": sender_email},
+            "to": [{"email": to_email, "name": recipient_name or "Student"}],
+            "subject": "LearnMind AI - Password Reset Verification Code",
+            "htmlContent": html_content,
+        }
+        headers = {
+            "api-key": api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                res = client.post(BREVO_REST_API_URL, json=payload, headers=headers)
+                if res.status_code in (200, 201, 202):
+                    return res.json()
+                else:
+                    err_text = res.text
+                    try:
+                        err_json = res.json()
+                        err_text = err_json.get("message") or err_json.get("code") or err_text
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"Brevo API error (HTTP {res.status_code}): {err_text}")
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"Network error connecting to Brevo API: {exc}")
+
+    else:
+        raise ValueError(
+            "No valid Brevo key configured in backend/.env. "
+            "Please provide BREVO_SMTP_KEY (xsmtpsib-...) or BREVO_API_KEY (xkeysib-...)."
+        )

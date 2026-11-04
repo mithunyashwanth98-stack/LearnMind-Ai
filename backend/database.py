@@ -345,3 +345,4 @@ def save_student_partition(user_id: str, data: dict):
     )
     conn.commit()
     conn.close()
+
