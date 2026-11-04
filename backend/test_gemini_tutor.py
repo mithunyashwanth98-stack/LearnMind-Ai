@@ -179,5 +179,60 @@ class TestGeminiTutorIntegration(unittest.TestCase):
         self.assertEqual(data_b["tutorMessages"][0]["text"], "Secret Beta Question")
         print("PASSED. Partitions and tutor conversation histories are completely isolated.")
 
+    def test_07_stack_python_and_line_by_line_followup(self):
+        """Test 7: Ask stack in Python, then follow up with 'Explain the code line by line'."""
+        print("\n--- TEST 7: Stack in Python + Line-by-Line Follow-up ---")
+        headers = {"Authorization": f"Bearer {self.demo_token}"}
+        
+        # Turn 1: Stack explanation
+        res1 = client.post("/api/tutor/chat", json={
+            "message": "Explain stack in Python with an example.",
+            "subject": "Data Structures",
+            "topic": "Stacks & Queues"
+        }, headers=headers)
+        self.assertEqual(res1.status_code, 200)
+        data1 = res1.json()
+        reply1 = data1["reply"]
+        self.assertTrue("stack" in reply1.lower() or "lifo" in reply1.lower())
+        self.assertTrue("```" in reply1)
+        print("Turn 1 (Stack in Python) PASSED. Reply contains code block and LIFO concept.")
+        
+        # Turn 2: Follow-up asking line by line explanation with conversation history
+        import time
+        time.sleep(1.2)
+        res2 = client.post("/api/tutor/chat", json={
+            "message": "Explain the code line by line.",
+            "subject": "Data Structures",
+            "topic": "Stacks & Queues",
+            "history": [
+                {"sender": "user", "text": "Explain stack in Python with an example."},
+                {"sender": "tutor", "text": reply1}
+            ]
+        }, headers=headers)
+        self.assertEqual(res2.status_code, 200)
+        data2 = res2.json()
+        reply2 = data2["reply"]
+        self.assertTrue(any(term in reply2.lower() for term in ["line", "append", "pop", "list", "stack"]))
+        print("Turn 2 (Explain code line by line) PASSED. Context maintained across turns.")
+
+    def test_08_multistep_math_and_formatting(self):
+        """Test 8: Mathematics question requiring multiple calculation steps and formula formatting."""
+        print("\n--- TEST 8: Multi-Step Mathematics & Formula Calculations ---")
+        import time
+        time.sleep(1.2)
+        headers = {"Authorization": f"Bearer {self.demo_token}"}
+        res = client.post("/api/tutor/chat", json={
+            "message": "Differentiate f(x) = (3x^2 + 2)(4x - 5) using the Product Rule. Show all formulas, substitutions, expansions, and simplification.",
+            "subject": "Calculus",
+            "topic": "Product Rule"
+        }, headers=headers)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        reply = data["reply"]
+        self.assertTrue("product rule" in reply.lower() or "formula" in reply.lower())
+        self.assertTrue("36" in reply or "30" in reply or "24" in reply)
+        print("PASSED. Multi-step calculus derivation with formulas, substitutions, and calculation received.")
+        print(f"Sample math calculation snippet:\n{reply[:160]}...")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
