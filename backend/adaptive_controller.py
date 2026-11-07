@@ -131,6 +131,21 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
    - The remaining THREE options must be realistic distractors representing common cognitive misconceptions or slips.
    - For each distractor, specify `misconceptionName` explaining the exact trap the student fell into.
    - Randomize which option is correct so it is not always option 1.
+
+4. MANDATORY SELF-CONTAINED QUESTION COMPLETENESS (NO MISSING INFORMATION):
+   - The question must be 100% self-contained. A student must be able to solve it completely from the text provided without guessing missing diagrams or data.
+   - If the question refers to a diagram, chemical structure, Fischer projection, stereocenter layout, truth table, state table, matrix, or code snippet, YOU MUST EXPLICITLY INCLUDE THE FULL ASCII/TEXT DIAGRAM, FORMULA, TABLE, OR CODE SNIPPET DIRECTLY INSIDE `questionText`.
+   - FOR ORGANIC CHEMISTRY / STEREOCHEMISTRY: NEVER say "represented in a standard Fischer projection" or "shown below" without drawing the projection! Draw it explicitly in ASCII, for example:
+       CHO
+        |
+     H--+--OH   (C2)
+        |
+    HO--+--H    (C3)
+        |
+       CH2OH
+   - FOR PROGRAMMING: Always include the full code block.
+   - FOR NETWORKING/OS: Always include the packet headers, arrival sequence, or table.
+   - NEVER refer to an external figure or "shown below" without including it in full within `questionText`.
 """
 
         config = types.GenerateContentConfig(
@@ -152,6 +167,17 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
                     import json
                     from syllabus_service import clean_json_response
                     data = clean_json_response(response.text)
+                    question_text = data.get("questionText", "").strip()
+
+                    # Completeness validation: reject if refers to a diagram/projection without providing it
+                    q_lower = question_text.lower()
+                    visual_triggers = ["fischer projection", "shown below", "in the diagram below", "in the table below", "in the following diagram", "refer to the figure"]
+                    has_trigger = any(t in q_lower for t in visual_triggers)
+                    has_visual = "\n" in question_text or "---" in question_text or "|" in question_text or "+" in question_text or "{" in question_text
+                    if has_trigger and not has_visual:
+                        logger.warning(f"Model '{model_name}' generated incomplete question missing diagram/table. Rejecting.")
+                        continue
+
                     raw_options = data.get("options", [])
                     if len(raw_options) >= 2:
                         # Normalize and ensure random shuffling of option letters
@@ -159,7 +185,7 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
                         random.shuffle(shuffled_opts)
                         formatted_opts = []
                         letter_map = ["A", "B", "C", "D"]
-                        for i, opt in enumerate(shuffled_opts):
+                        for i, opt in enumerate(shuffled_opts[:4]):
                             formatted_opts.append({
                                 "id": f"opt_{letter_map[i % 4].lower()}_{uuid.uuid4().hex[:6]}",
                                 "letter": letter_map[i % 4],
@@ -169,16 +195,34 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
                                 "explanation": opt.get("explanation", "").strip()
                             })
 
+                        # Pad to exactly 4 if model gave 3
+                        while len(formatted_opts) < 4:
+                            idx = len(formatted_opts)
+                            formatted_opts.append({
+                                "id": f"opt_{letter_map[idx].lower()}_{uuid.uuid4().hex[:6]}",
+                                "letter": letter_map[idx],
+                                "text": "Insufficient operational parameters provided",
+                                "isCorrect": False,
+                                "misconceptionName": "Parameter insufficiency assumption",
+                                "explanation": "Distractor choice indicating incomplete operational data."
+                            })
+
                         # Safety verification: ensure exactly 1 correct option
                         correct_count = sum(1 for o in formatted_opts if o["isCorrect"])
                         if correct_count != 1:
-                            # Default first to correct if model produced 0 or multiple
+                            # Ensure exactly first item is marked correct if none or multiple
                             for idx, o in enumerate(formatted_opts):
                                 o["isCorrect"] = (idx == 0)
 
+                        # Enforce unique option texts
+                        unique_texts = set(o["text"].strip().lower() for o in formatted_opts)
+                        if len(unique_texts) != 4:
+                            logger.warning(f"Model '{model_name}' produced duplicate options. Rejecting.")
+                            continue
+
                         return {
                             "id": f"q_adapt_{uuid.uuid4().hex[:12]}",
-                            "questionText": data.get("questionText", "").strip(),
+                            "questionText": question_text,
                             "difficulty": data.get("difficulty", target_difficulty).lower(),
                             "conceptTested": data.get("conceptTested", topic_name).strip(),
                             "pedagogicalIntent": data.get("pedagogicalIntent", pedagogical_intent).strip(),
@@ -536,15 +580,29 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
             responses = get_adaptive_responses_for_session(session_id)
             prior_questions = [r["question_text"] for r in responses]
 
+            # Look up current topic and subtopics from hierarchy to preserve topic grounding
+            curr_topic_id = session.get("current_topic_id")
+            active_subtopics = []
+            active_topic_name = topic_name
+
+            for u in hierarchy.get("units", []):
+                for t in u.get("topics", []):
+                    if t.get("id") == curr_topic_id:
+                        active_topic_name = t.get("name", topic_name)
+                        active_subtopics = t.get("subtopics", [])
+                        break
+                if active_subtopics:
+                    break
+
             # Generate next question dynamically
             next_question = cls.generate_dynamic_question(
                 subject_name=subject_name,
-                topic_name=topic_name,
-                subtopics=[],
+                topic_name=active_topic_name,
+                subtopics=active_subtopics,
                 target_difficulty=next_difficulty,
                 pedagogical_intent=next_stage,
                 previous_questions=prior_questions,
-                probe_concept=topic_name if next_stage in ("remediation", "prerequisite") else None,
+                probe_concept=active_topic_name if next_stage in ("remediation", "prerequisite") else None,
                 misconception_trap=diagnosed_trap if next_stage == "remediation" else None
             )
 
