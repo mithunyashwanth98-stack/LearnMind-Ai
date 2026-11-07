@@ -441,6 +441,22 @@ export const AssessmentPage: React.FC<AssessmentPageProps> = ({
 
           {/* Question Box */}
           <GlassCard glowColor="cyan" className="p-8 space-y-6">
+            {/* Model Generation Provenance Banner */}
+            {activeQuestion.is_fallback ? (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 flex items-center gap-3 text-amber-300 text-xs font-medium">
+                <AlertTriangle className="w-5 h-5 flex-shrink-0 text-amber-400" />
+                <div>
+                  <span className="font-bold text-amber-200">Heuristic Offline Fallback: </span>
+                  {activeQuestion.fallback_notice || 'Live Gemini AI was temporarily unreachable. This question was generated using offline heuristics, not live syllabus analysis.'}
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-[11px] font-mono text-cyan-400/80 bg-cyan-950/30 px-3 py-1.5 rounded-lg border border-cyan-500/20 w-fit">
+                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Live Gemini Syllabus Analysis ({activeQuestion.model_used || 'gemini-3.5-flash'})</span>
+              </div>
+            )}
+
             <div className="space-y-4">
               <h3 className="text-lg font-bold text-white leading-relaxed whitespace-pre-line font-sans">
                 {activeQuestion.questionText}

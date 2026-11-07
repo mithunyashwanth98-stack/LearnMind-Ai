@@ -16,32 +16,41 @@ class MisconceptionFingerprintEngine:
         difficulty: str
     ) -> Dict[str, float]:
         """
-        Bayesian update based on question difficulty weighting:
-        - Answering hard questions correctly provides stronger mastery evidence.
-        - Failing easy questions provides stronger weakness evidence.
+        Exact Bayesian Bernoulli conjugate update:
+        Prior: Beta(alpha, beta). Default uninformative prior is Beta(1, 1).
+        Likelihood: Bernoulli trial (1 for correct, 0 for incorrect).
+        Posterior: Beta(alpha + 1, beta) for success, Beta(alpha, beta + 1) for failure.
+
+        For example:
+        - Prior Beta(1, 1) + 4 correct answers + 1 incorrect answer = Beta(5, 2).
+        - Exact Posterior Mean: alpha / (alpha + beta) = 5 / 7 ≈ 71.43%.
+        - Exact Posterior Variance: (alpha * beta) / ((alpha + beta)^2 * (alpha + beta + 1)) = 10 / 392 ≈ 0.02551.
+        - Bayesian Certainty (Information Gain / Variance Reduction):
+          Relative reduction compared to uninformative prior Beta(1,1) with variance 1/12 ≈ 0.08333:
+          Certainty = (1 - Variance / (1/12)) * 100% = (1 - 12 * Variance) * 100%.
+          For Beta(5, 2): (1 - 12 * 0.02551) * 100% = 69.39% ≈ 69%.
         """
-        diff = difficulty.lower()
         if is_correct:
-            increment = 2.0 if diff == "hard" else (1.5 if diff == "medium" else 1.0)
-            new_alpha = alpha + increment
+            new_alpha = alpha + 1.0
             new_beta = beta
         else:
-            increment = 2.0 if diff == "easy" else (1.5 if diff == "medium" else 1.0)
             new_alpha = alpha
-            new_beta = beta + increment
+            new_beta = beta + 1.0
 
         # Posterior statistics
         denom = new_alpha + new_beta
         mean = new_alpha / denom
         variance = (new_alpha * new_beta) / (pow(denom, 2) * (denom + 1))
-        # Variance decreases as sample size grows; certainty increases
-        certainty = max(5, min(99, round((1.0 - (variance * 10)) * 100)))
+        
+        # Bayesian Certainty based on information-theoretic variance reduction from Beta(1,1)
+        prior_variance = 1.0 / 12.0
+        certainty = max(5, min(99, round((1.0 - (variance / prior_variance)) * 100)))
 
         return {
             "alpha": round(new_alpha, 2),
             "beta": round(new_beta, 2),
-            "posterior_mean": round(mean, 3),
-            "variance": round(variance, 4),
+            "posterior_mean": round(mean, 4),
+            "variance": round(variance, 5),
             "certainty": certainty
         }
 
@@ -114,15 +123,16 @@ class MisconceptionFingerprintEngine:
         denom = final_alpha + final_beta
         mastery_rate = round((final_alpha / denom) * 100) if denom > 0 else 50
         variance = (final_alpha * final_beta) / (pow(denom, 2) * (denom + 1))
-        confidence = max(10, min(99, round((1.0 - (variance * 10)) * 100)))
+        prior_variance = 1.0 / 12.0
+        confidence = max(10, min(99, round((1.0 - (variance / prior_variance)) * 100)))
 
-        is_conclusive = total_questions >= 5 and (confidence >= 75 or len(confirmed_gaps) > 0)
+        is_conclusive = total_questions >= 5 and (confidence >= 65 or len(confirmed_gaps) > 0)
 
         mastered = []
         developing = []
         struggling = []
 
-        if mastery_rate >= 75 and confidence >= 70:
+        if mastery_rate >= 70 and confidence >= 65:
             mastered.extend(evaluated_topics)
         elif mastery_rate >= 50:
             developing.extend(evaluated_topics)

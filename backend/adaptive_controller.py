@@ -182,7 +182,10 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
                             "difficulty": data.get("difficulty", target_difficulty).lower(),
                             "conceptTested": data.get("conceptTested", topic_name).strip(),
                             "pedagogicalIntent": data.get("pedagogicalIntent", pedagogical_intent).strip(),
-                            "options": formatted_opts
+                            "options": formatted_opts,
+                            "is_fallback": False,
+                            "generation_source": "gemini",
+                            "model_used": model_name
                         }
             except APIError as api_err:
                 logger.warning(f"Model '{model_name}' API notice: {api_err.code} - {api_err.message}. Trying next...")
@@ -253,7 +256,11 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
             "difficulty": target_difficulty.lower(),
             "conceptTested": topic_name,
             "pedagogicalIntent": pedagogical_intent,
-            "options": opts
+            "options": opts,
+            "is_fallback": True,
+            "generation_source": "heuristic_fallback",
+            "model_used": "offline_heuristic",
+            "fallback_notice": "Offline Heuristic Fallback: Live Gemini AI API was temporarily unreachable. This question was generated using offline heuristics, not live Gemini syllabus analysis."
         }
 
     @classmethod
@@ -412,8 +419,8 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
 
         # Stopping Rules: Min 5, Max 8
         if total_answered >= 5:
-            # If student consistently aced Medium/Hard questions with high certainty
-            if is_correct and bayes["certainty"] >= 80 and (curr_difficulty in ("medium", "hard")):
+            # If student consistently aced Medium/Hard questions with high certainty (Beta(5,2) -> mean 71.4%, certainty 69.4%)
+            if is_correct and bayes["certainty"] >= 65 and bayes["posterior_mean"] >= 0.70 and (curr_difficulty in ("medium", "hard")):
                 should_conclude = True
                 pedagogical_reason = f"Student demonstrated consistent understanding across {total_answered} questions with {bayes['certainty']}% Bayesian confidence."
             # If a specific weakness was investigated and remediated
