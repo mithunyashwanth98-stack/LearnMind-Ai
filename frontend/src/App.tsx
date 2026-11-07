@@ -46,14 +46,14 @@ export function App() {
   });
   const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
   const [brainMode, setBrainMode] = useState<BrainMode>('compact');
-  const [subjects, setSubjects] = useState<Subject[]>(sampleSubjects);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
   const [student, setStudent] = useState<StudentProfile>(initialStudent);
-  const [misconceptions, setMisconceptions] = useState<Misconception[]>(sampleMisconceptions);
-  const [learningPath, setLearningPath] = useState<LearningPathStep[]>(sampleLearningPath);
+  const [misconceptions, setMisconceptions] = useState<Misconception[]>([]);
+  const [learningPath, setLearningPath] = useState<LearningPathStep[]>([]);
   const [tutorMessages, setTutorMessages] = useState<any[]>([]);
   const [isKnowledgeModalOpen, setIsKnowledgeModalOpen] = useState(false);
-  const [selectedSubject, setSelectedSubject] = useState<Subject | null>(sampleSubjects[0]);
-  const [tutorInitialTopic, setTutorInitialTopic] = useState('Differentiation & Power Rule');
+  const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
+  const [tutorInitialTopic, setTutorInitialTopic] = useState('');
 
   // Verify and hydrate current user session on mount
   useEffect(() => {
@@ -68,9 +68,11 @@ export function App() {
             if (res.user && res.partition) {
               setToken(storedToken);
               setStudent(res.partition.profile);
-              setSubjects(res.partition.subjects);
-              setMisconceptions(res.partition.misconceptions);
-              setLearningPath(res.partition.learningPath);
+              const subs = res.partition.subjects || [];
+              setSubjects(subs);
+              setSelectedSubject(subs.length > 0 ? subs[0] : null);
+              setMisconceptions(res.partition.misconceptions || []);
+              setLearningPath(res.partition.learningPath || []);
               if (res.partition.tutorMessages) {
                 setTutorMessages(res.partition.tutorMessages);
               }
@@ -86,9 +88,11 @@ export function App() {
               const partition = getStudentPartition(session.userId);
               if (partition) {
                 setStudent(partition.profile);
-                setSubjects(partition.subjects);
-                setMisconceptions(partition.misconceptions);
-                setLearningPath(partition.learningPath);
+                const subs = partition.subjects || [];
+                setSubjects(subs);
+                setSelectedSubject(subs.length > 0 ? subs[0] : null);
+                setMisconceptions(partition.misconceptions || []);
+                setLearningPath(partition.learningPath || []);
                 if (partition.tutorMessages) {
                   setTutorMessages(partition.tutorMessages);
                 }
@@ -141,9 +145,11 @@ export function App() {
     sessionStorage.setItem('learnmind_session_token', sessionToken);
     sessionStorage.setItem('learnmind_session_user_id', user.id);
     setStudent(partition.profile);
-    setSubjects(partition.subjects);
-    setMisconceptions(partition.misconceptions);
-    setLearningPath(partition.learningPath);
+    const subs = partition.subjects || [];
+    setSubjects(subs);
+    setSelectedSubject(subs.length > 0 ? subs[0] : null);
+    setMisconceptions(partition.misconceptions || []);
+    setLearningPath(partition.learningPath || []);
     setTutorMessages(partition.tutorMessages || []);
     setIsAuthenticated(true);
     setActiveSection('dashboard');
@@ -159,6 +165,11 @@ export function App() {
     sessionStorage.removeItem('learnmind_session_user_id');
     localStorage.removeItem('learnmind_session_token');
     setToken('');
+    setSubjects([]);
+    setSelectedSubject(null);
+    setMisconceptions([]);
+    setLearningPath([]);
+    setTutorMessages([]);
     setIsAuthenticated(false);
     setActiveSection('dashboard');
     setBrainMode('compact');
@@ -170,6 +181,10 @@ export function App() {
   };
 
   const handleLaunchAssessment = (subjectId?: string) => {
+    if (subjectId) {
+      const match = subjects.find(s => s.id === subjectId);
+      if (match) setSelectedSubject(match);
+    }
     setActiveSection('assessment');
     setIsKnowledgeModalOpen(false);
   };
@@ -181,14 +196,24 @@ export function App() {
   };
 
   const handleAddSubject = (newSubject: Subject) => {
-    const updated = [...subjects, newSubject];
-    setSubjects(updated);
-    persistPartition(student, updated);
+    setSubjects((prev) => {
+      const existsIdx = prev.findIndex((s) => s.id === newSubject.id || s.name.toLowerCase() === newSubject.name.toLowerCase());
+      if (existsIdx >= 0) {
+        const copy = [...prev];
+        copy[existsIdx] = newSubject;
+        return copy;
+      }
+      return [...prev, newSubject];
+    });
+    setSelectedSubject(newSubject);
   };
 
   const handleUpdateSubject = (updatedSubj: Subject) => {
     const updated = subjects.map((s) => (s.id === updatedSubj.id ? updatedSubj : s));
     setSubjects(updated);
+    if (selectedSubject?.id === updatedSubj.id) {
+      setSelectedSubject(updatedSubj);
+    }
     persistPartition(student, updated);
   };
 

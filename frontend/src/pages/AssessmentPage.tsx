@@ -302,6 +302,22 @@ export const AssessmentPage: React.FC<AssessmentPageProps> = ({
     }
   };
 
+  if (subjects.length === 0 || !selectedSubject) {
+    return (
+      <div className="p-8 space-y-8 max-w-5xl mx-auto animate-fadeIn">
+        <div className="py-24 text-center space-y-4 max-w-xl mx-auto">
+          <div className="p-4 rounded-2xl bg-cyan-500/10 text-cyan-400 inline-flex border border-cyan-500/30">
+            <Cpu className="w-10 h-10" />
+          </div>
+          <h3 className="text-xl font-bold text-white">No Subjects Enrolled</h3>
+          <p className="text-xs text-slate-400">
+            Please upload a course syllabus in the Syllabus Intelligence Engine before launching an adaptive diagnostic assessment.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-8 space-y-8 max-w-5xl mx-auto animate-fadeIn">
       {/* Assessment Header */}

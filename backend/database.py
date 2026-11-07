@@ -268,7 +268,7 @@ def create_user(name: str, email: str, password_hash: str):
         (user_id, name.strip(), email.strip().lower(), password_hash, now_iso, now_iso)
     )
 
-    # Initialize clean, unassessed student profile partition
+    # Initialize clean, unassessed student profile partition (zero hardcoded default subjects)
     clean_partition = {
         "profile": {
             "id": user_id,
@@ -281,24 +281,7 @@ def create_user(name: str, email: str, password_hash: str):
             "isNewStudent": True,
             "activeMisconceptionsCount": 0
         },
-        "subjects": [
-            {
-                "id": "sub_math",
-                "name": "Mathematics",
-                "code": "MATH-201",
-                "status": "not_assessed",
-                "masteryScore": 0,
-                "confidence": "none",
-                "color": "#00f0ff",
-                "brainRegion": "Frontal Cortex (Reasoning & Logic)",
-                "nodeCoordinates": [0.8, 0.4, 0.5],
-                "totalTopics": 12,
-                "completedTopics": 0,
-                "detectedMisconceptionsCount": 0,
-                "recommendedNextConcept": "Foundational Limits & Functions",
-                "units": []
-            }
-        ],
+        "subjects": [],
         "misconceptions": [],
         "learningPath": [],
         "tutorMessages": []
@@ -429,7 +412,201 @@ def delete_session(token: str):
     conn.commit()
     conn.close()
 
+def sync_student_partition_subjects(user_id: str) -> dict:
+    """
+    Authoritative single-source-of-truth synchronization.
+    Builds student partition subjects exclusively from confirmed subject_syllabi.
+    Prunes hardcoded legacy/default subjects (e.g. sub_math) and orphans without genuine confirmed syllabi.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    if user_id == "usr_demo_4491":
+        cursor.execute("SELECT partition_json FROM student_partitions WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row["partition_json"]:
+            return json.loads(row["partition_json"])
+        return {}
+
+    # Fetch all confirmed syllabi for this authenticated student
+    cursor.execute(
+        "SELECT * FROM subject_syllabi WHERE user_id = ? AND extraction_status = 'confirmed' ORDER BY created_at ASC",
+        (user_id,)
+    )
+    syllabi_rows = cursor.fetchall()
+
+    cursor.execute("SELECT partition_json FROM student_partitions WHERE user_id = ?", (user_id,))
+    part_row = cursor.fetchone()
+    partition = json.loads(part_row["partition_json"]) if (part_row and part_row["partition_json"]) else {
+        "profile": {
+            "id": user_id,
+            "streakDays": 0,
+            "totalStudyHours": 0,
+            "completedConceptsCount": 0,
+            "overallMastery": 0,
+            "isNewStudent": True,
+            "activeMisconceptionsCount": 0
+        },
+        "subjects": [],
+        "misconceptions": [],
+        "learningPath": [],
+        "tutorMessages": []
+    }
+
+    # If student has zero confirmed syllabi, partition subjects MUST be empty
+    if not syllabi_rows:
+        partition["subjects"] = []
+        if partition.get("profile"):
+            partition["profile"]["completedConceptsCount"] = 0
+            partition["profile"]["overallMastery"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cursor.execute(
+            """
+            INSERT INTO student_partitions (user_id, partition_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET partition_json = excluded.partition_json, updated_at = excluded.updated_at
+            """,
+            (user_id, json.dumps(partition), now_iso)
+        )
+        conn.commit()
+        conn.close()
+        return partition
+
+    # Fetch individual topic coverage entries
+    cursor.execute(
+        "SELECT subject_id, topic_id, coverage_status, is_current_focus FROM student_topic_coverage WHERE user_id = ?",
+        (user_id,)
+    )
+    cov_rows = cursor.fetchall()
+    coverage_dict = {(cr["subject_id"], cr["topic_id"]): cr["coverage_status"] for cr in cov_rows}
+
+    existing_sub_map = {s.get("id"): s for s in partition.get("subjects", [])}
+    synced_subjects = []
+    total_completed_all = 0
+    total_topics_all = 0
+
+    for s_row in syllabi_rows:
+        s_dict = dict(s_row)
+        sub_id = s_dict["subject_id"]
+        sub_name = s_dict["subject_name"]
+        sub_code = s_dict.get("subject_code") or "MOD-101"
+
+        hierarchy = {}
+        if s_dict.get("hierarchy_json"):
+            try:
+                hierarchy = json.loads(s_dict["hierarchy_json"])
+            except Exception:
+                hierarchy = {}
+
+        raw_units = hierarchy.get("units", [])
+        fe_units = []
+        completed_in_subj = 0
+        total_in_subj = 0
+
+        for u_idx, u in enumerate(raw_units):
+            fe_topics = []
+            for t_idx, t in enumerate(u.get("topics", [])):
+                t_id = t.get("id") or f"top_{u_idx + 1}_{t_idx + 1}"
+                t_name = t.get("name")
+
+                cov_status = coverage_dict.get((sub_id, t_id), "not_started")
+                is_completed = (cov_status == "completed")
+                if is_completed:
+                    completed_in_subj += 1
+                total_in_subj += 1
+
+                concepts = []
+                for c_idx, st in enumerate(t.get("subtopics", [])):
+                    concepts.append({
+                        "id": f"c_{t_id}_{c_idx + 1}",
+                        "name": st,
+                        "description": f"Subtopic of {t_name}",
+                        "masteryScore": 100 if is_completed else 0,
+                        "status": "strong" if is_completed else "not_assessed",
+                        "confidence": "high" if is_completed else "none"
+                    })
+                if not concepts:
+                    concepts.append({
+                        "id": f"c_{t_id}_1",
+                        "name": t_name,
+                        "description": "Core concept",
+                        "masteryScore": 100 if is_completed else 0,
+                        "status": "strong" if is_completed else "not_assessed",
+                        "confidence": "high" if is_completed else "none"
+                    })
+
+                fe_topics.append({
+                    "id": t_id,
+                    "name": t_name,
+                    "page_number": t.get("page_number", u.get("page_number", 1)),
+                    "status": "strong" if is_completed else "not_assessed",
+                    "masteryScore": 100 if is_completed else 0,
+                    "confidence": "high" if is_completed else "none",
+                    "completed": is_completed,
+                    "coverageStatus": cov_status,
+                    "misconceptions": [],
+                    "concepts": concepts
+                })
+
+            fe_units.append({
+                "id": u.get("id") or f"u_{u_idx + 1}",
+                "title": u.get("title", f"Unit {u_idx + 1}"),
+                "page_number": u.get("page_number", 1),
+                "topics": fe_topics
+            })
+
+        existing_s = existing_sub_map.get(sub_id, {})
+        color = existing_s.get("color") or ("#38bdf8" if any(k in sub_name.lower() for k in ["java", "oop", "code", "python", "software", "cs"]) else "#a855f7")
+        brain_region = existing_s.get("brainRegion") or ("Temporal Lobe (Programming & Systems)" if any(k in sub_name.lower() for k in ["code", "prog", "java", "python", "os"]) else "Frontal Cortex (Reasoning & Theory)")
+        node_coords = existing_s.get("nodeCoordinates") or [0.6, 0.2, 0.4]
+
+        mastery_pct = round((completed_in_subj / total_in_subj) * 100) if total_in_subj > 0 else 0
+        total_completed_all += completed_in_subj
+        total_topics_all += total_in_subj
+
+        synced_subject = {
+            "id": sub_id,
+            "name": sub_name,
+            "code": sub_code,
+            "status": "strong" if mastery_pct >= 80 else ("developing" if mastery_pct > 0 else "not_assessed"),
+            "masteryScore": mastery_pct,
+            "confidence": "high" if mastery_pct >= 60 else "none",
+            "color": color,
+            "brainRegion": brain_region,
+            "nodeCoordinates": node_coords,
+            "totalTopics": total_in_subj,
+            "completedTopics": completed_in_subj,
+            "detectedMisconceptionsCount": 0,
+            "recommendedNextConcept": f"Focus on {fe_units[0]['topics'][0]['name'] if fe_units and fe_units[0]['topics'] else sub_name}",
+            "units": fe_units
+        }
+        synced_subjects.append(synced_subject)
+
+    partition["subjects"] = synced_subjects
+    if partition.get("profile"):
+        partition["profile"]["completedConceptsCount"] = total_completed_all
+        if total_topics_all > 0:
+            partition["profile"]["overallMastery"] = round((total_completed_all / total_topics_all) * 100)
+        if len(synced_subjects) > 0 and partition["profile"].get("isNewStudent") and total_completed_all > 0:
+            partition["profile"]["isNewStudent"] = False
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        """
+        INSERT INTO student_partitions (user_id, partition_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET partition_json = excluded.partition_json, updated_at = excluded.updated_at
+        """,
+        (user_id, json.dumps(partition), now_iso)
+    )
+    conn.commit()
+    conn.close()
+    return partition
+
 def get_student_partition(user_id: str):
+    if user_id != "usr_demo_4491":
+        return sync_student_partition_subjects(user_id)
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT partition_json FROM student_partitions WHERE user_id = ?", (user_id,))
@@ -458,6 +635,75 @@ def save_student_partition(user_id: str, data: dict):
 # Syllabus & Knowledge Base Operations
 # -------------------------------------------------------------
 
+def find_duplicate_syllabus(user_id: str, file_hash: str = None, subject_name: str = None, subject_code: str = None):
+    """
+    Identifies if a matching syllabus already exists for this authenticated student:
+    1. By SHA-256 file_hash of uploaded PDF
+    2. By normalized subject_name
+    3. By normalized subject_code (if non-generic)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 1. Match by SHA-256 file_hash among confirmed syllabi
+    if file_hash:
+        cursor.execute(
+            "SELECT * FROM subject_syllabi WHERE user_id = ? AND file_hash = ? AND extraction_status = 'confirmed' LIMIT 1",
+            (user_id, file_hash)
+        )
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            d = dict(row)
+            d["duplicate_reason"] = "identical_file"
+            if d.get("hierarchy_json"):
+                try:
+                    d["hierarchy"] = json.loads(d["hierarchy_json"])
+                except Exception:
+                    d["hierarchy"] = None
+            return d
+
+    # 2. Match by normalized subject name
+    if subject_name and subject_name.strip():
+        norm_name = subject_name.strip().lower()
+        cursor.execute(
+            "SELECT * FROM subject_syllabi WHERE user_id = ? AND extraction_status = 'confirmed' AND LOWER(TRIM(subject_name)) = ? LIMIT 1",
+            (user_id, norm_name)
+        )
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            d = dict(row)
+            d["duplicate_reason"] = "matching_name"
+            if d.get("hierarchy_json"):
+                try:
+                    d["hierarchy"] = json.loads(d["hierarchy_json"])
+                except Exception:
+                    d["hierarchy"] = None
+            return d
+
+    # 3. Match by normalized subject code (if non-empty and non-generic)
+    if subject_code and subject_code.strip() and subject_code.strip().upper() not in ("MOD-101", ""):
+        norm_code = subject_code.strip().lower()
+        cursor.execute(
+            "SELECT * FROM subject_syllabi WHERE user_id = ? AND extraction_status = 'confirmed' AND LOWER(TRIM(subject_code)) = ? LIMIT 1",
+            (user_id, norm_code)
+        )
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            d = dict(row)
+            d["duplicate_reason"] = "matching_code"
+            if d.get("hierarchy_json"):
+                try:
+                    d["hierarchy"] = json.loads(d["hierarchy_json"])
+                except Exception:
+                    d["hierarchy"] = None
+            return d
+
+    conn.close()
+    return None
+
 def create_or_update_syllabus(
     user_id: str,
     subject_id: str,
@@ -475,11 +721,28 @@ def create_or_update_syllabus(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     # Check if a syllabus already exists for this subject & user
+    # 1. By subject_id
     cursor.execute(
         "SELECT id FROM subject_syllabi WHERE user_id = ? AND subject_id = ?",
         (user_id, subject_id)
     )
     existing = cursor.fetchone()
+
+    # 2. If not found, check by file_hash
+    if not existing and file_hash:
+        cursor.execute(
+            "SELECT id FROM subject_syllabi WHERE user_id = ? AND file_hash = ?",
+            (user_id, file_hash)
+        )
+        existing = cursor.fetchone()
+
+    # 3. If not found, check by normalized subject_name
+    if not existing and subject_name:
+        cursor.execute(
+            "SELECT id FROM subject_syllabi WHERE user_id = ? AND LOWER(TRIM(subject_name)) = LOWER(TRIM(?))",
+            (user_id, subject_name.strip())
+        )
+        existing = cursor.fetchone()
 
     hierarchy_json = json.dumps(hierarchy_dict) if hierarchy_dict else None
 
@@ -488,14 +751,14 @@ def create_or_update_syllabus(
         cursor.execute(
             """
             UPDATE subject_syllabi
-            SET subject_name = ?, subject_code = ?, original_filename = ?,
+            SET subject_id = ?, subject_name = ?, subject_code = ?, original_filename = ?,
                 raw_text = ?, hierarchy_json = COALESCE(?, hierarchy_json),
                 extraction_status = ?, file_hash = COALESCE(?, file_hash),
                 confidence_score = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
             """,
             (
-                subject_name, subject_code, original_filename,
+                subject_id, subject_name, subject_code, original_filename,
                 raw_text, hierarchy_json, extraction_status, file_hash,
                 confidence_score, now_iso, syllabus_id, user_id
             )
@@ -519,6 +782,11 @@ def create_or_update_syllabus(
 
     conn.commit()
     conn.close()
+
+    # Auto-synchronize student partition if this syllabus is confirmed
+    if extraction_status == "confirmed" and user_id != "usr_demo_4491":
+        sync_student_partition_subjects(user_id)
+
     return get_syllabus_by_id(syllabus_id)
 
 def get_syllabus_by_file_hash(user_id: str, file_hash: str):
@@ -606,10 +874,21 @@ def get_syllabus_by_subject(user_id: str, subject_id: str):
 def delete_syllabus(syllabus_id: str, user_id: str) -> bool:
     conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("SELECT subject_id FROM subject_syllabi WHERE id = ? AND user_id = ?", (syllabus_id, user_id))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return False
+    sub_id = row["subject_id"]
     cursor.execute("DELETE FROM subject_syllabi WHERE id = ? AND user_id = ?", (syllabus_id, user_id))
+    cursor.execute("DELETE FROM student_topic_coverage WHERE user_id = ? AND subject_id = ?", (user_id, sub_id))
+    cursor.execute("DELETE FROM topic_knowledge_base WHERE syllabus_id = ?", (syllabus_id,))
     affected = cursor.rowcount
     conn.commit()
     conn.close()
+
+    if user_id != "usr_demo_4491":
+        sync_student_partition_subjects(user_id)
     return affected > 0
 
 def update_syllabus_hierarchy(syllabus_id: str, user_id: str, hierarchy_dict: dict, extraction_status: str = "extracted"):
@@ -757,6 +1036,9 @@ def save_student_topic_coverage_entry(
     )
     conn.commit()
     conn.close()
+
+    if user_id != "usr_demo_4491":
+        sync_student_partition_subjects(user_id)
 
 def get_student_topic_coverage_list(user_id: str, subject_id: str):
     conn = get_connection()

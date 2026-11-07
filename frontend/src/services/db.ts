@@ -111,93 +111,9 @@ export async function initializeDatabase(): Promise<void> {
   }
 }
 
-// Create clean, unassessed subjects template for new students
+// Create clean, unassessed subjects template for new students (zero default subjects)
 function createCleanSubjectsForNewStudent(): Subject[] {
-  return [
-    {
-      id: 'sub_math',
-      name: 'Mathematics',
-      code: 'MATH-201',
-      status: 'not_assessed',
-      masteryScore: 0,
-      confidence: 'none',
-      color: '#00f0ff',
-      brainRegion: 'Frontal Cortex (Reasoning & Logic)',
-      nodeCoordinates: [0.8, 0.4, 0.5],
-      totalTopics: 12,
-      completedTopics: 0,
-      detectedMisconceptionsCount: 0,
-      recommendedNextConcept: 'Foundational Limits & Functions',
-      units: [
-        {
-          id: 'u1',
-          title: 'Unit 1: Functions & Differential Calculus',
-          topics: [
-            {
-              id: 't1',
-              name: 'Limits and Continuity',
-              status: 'not_assessed',
-              masteryScore: 0,
-              confidence: 'none',
-              completed: false,
-              recommendedNext: 'Definition of the Derivative',
-              concepts: [
-                {
-                  id: 'c1',
-                  name: 'Epsilon-Delta Definition',
-                  description: 'Rigorous definition of limit approaching finite values',
-                  masteryScore: 0,
-                  status: 'not_assessed',
-                  confidence: 'none',
-                },
-                {
-                  id: 'c2',
-                  name: 'One-Sided Limits',
-                  description: 'Left and right behavior near discontinuities',
-                  masteryScore: 0,
-                  status: 'not_assessed',
-                  confidence: 'none',
-                },
-              ],
-              misconceptions: [],
-            },
-          ],
-        },
-      ],
-    },
-    {
-      id: 'sub_cs',
-      name: 'Computer Science',
-      code: 'CS-101',
-      status: 'not_assessed',
-      masteryScore: 0,
-      confidence: 'none',
-      color: '#a855f7',
-      brainRegion: 'Temporal Lobe (Memory & Algorithms)',
-      nodeCoordinates: [-0.9, 0.2, 0.4],
-      totalTopics: 10,
-      completedTopics: 0,
-      detectedMisconceptionsCount: 0,
-      recommendedNextConcept: 'Asymptotic Complexity Analysis',
-      units: [],
-    },
-    {
-      id: 'sub_phys',
-      name: 'Physics',
-      code: 'PHYS-150',
-      status: 'not_assessed',
-      masteryScore: 0,
-      confidence: 'none',
-      color: '#38bdf8',
-      brainRegion: 'Parietal Lobe (Spatial & Motion)',
-      nodeCoordinates: [0.4, 0.9, -0.3],
-      totalTopics: 8,
-      completedTopics: 0,
-      detectedMisconceptionsCount: 0,
-      recommendedNextConcept: 'Kinematics in One Dimension',
-      units: [],
-    },
-  ];
+  return [];
 }
 
 // User Registration
@@ -242,23 +158,9 @@ export async function registerUser(
       isNewStudent: true,
       activeMisconceptionsCount: 0,
     },
-    subjects: createCleanSubjectsForNewStudent(),
+    subjects: [],
     misconceptions: [],
-    learningPath: [
-      {
-        id: 'step_init_1',
-        topicId: 't1',
-        topicName: 'Diagnostic Assessment Calibration',
-        subjectName: 'Mathematics',
-        whyRecommended: 'Complete your initial diagnostic test to map your cognitive neural matrix',
-        difficulty: 'Beginner',
-        estimatedMinutes: 10,
-        currentMastery: 0,
-        completed: false,
-        prerequisites: [],
-        status: 'ready',
-      },
-    ],
+    learningPath: [],
     tutorMessages: [
       {
         id: 'msg_welcome',

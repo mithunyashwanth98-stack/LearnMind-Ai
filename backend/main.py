@@ -28,6 +28,8 @@ from database import (
     delete_session,
     get_student_partition,
     save_student_partition,
+    sync_student_partition_subjects,
+    find_duplicate_syllabus,
     create_or_update_syllabus,
     get_syllabus_by_id,
     get_syllabus_by_file_hash,
@@ -629,26 +631,36 @@ async def extract_syllabus_preview(
 
     file_hash = hashlib.sha256(content).hexdigest()
 
-    # Check cache for identical file payload
+    input_sub_name = subject_name.strip() if (subject_name and subject_name.strip() and subject_name.lower() not in ("undefined", "null")) else ""
+    input_sub_code = subject_code.strip() if (subject_code and subject_code.strip() and subject_code.lower() not in ("undefined", "null")) else ""
+
+    # Check for existing duplicate syllabus before extraction if not forced
     if not force_reprocess:
-        cached = get_syllabus_by_file_hash(current_user["id"], file_hash)
-        if cached and cached.get("hierarchy"):
+        duplicate = find_duplicate_syllabus(
+            user_id=current_user["id"],
+            file_hash=file_hash,
+            subject_name=input_sub_name,
+            subject_code=input_sub_code
+        )
+        if duplicate and duplicate.get("hierarchy"):
             return {
                 "success": True,
                 "cached": True,
+                "is_duplicate": True,
+                "duplicate_type": duplicate.get("duplicate_reason", "identical_file"),
+                "existing_syllabus_id": duplicate["id"],
+                "existing_subject_name": duplicate["subject_name"],
+                "existing_subject_code": duplicate.get("subject_code") or "MOD-101",
                 "file_hash": file_hash,
-                "subject_name": cached.get("subject_name"),
-                "subject_code": cached.get("subject_code"),
-                "original_filename": cached.get("original_filename") or file.filename,
-                "hierarchy": cached.get("hierarchy"),
-                "confidence_score": cached.get("confidence_score", 1.0),
+                "subject_name": duplicate.get("subject_name"),
+                "subject_code": duplicate.get("subject_code"),
+                "original_filename": duplicate.get("original_filename") or file.filename,
+                "hierarchy": duplicate.get("hierarchy"),
+                "confidence_score": duplicate.get("confidence_score", 1.0),
                 "needs_review": False,
-                "validation": cached.get("hierarchy", {}).get("validation", {"confidenceScore": 1.0, "needsReview": False}),
-                "message": "Loaded validated curriculum from cache. Review and edit before confirming."
+                "validation": duplicate.get("hierarchy", {}).get("validation", {"confidenceScore": 1.0, "needsReview": False}),
+                "message": f"Syllabus for '{duplicate['subject_name']}' is already enrolled in your account."
             }
-
-    input_sub_name = subject_name.strip() if (subject_name and subject_name.strip() and subject_name.lower() not in ("undefined", "null")) else ""
-    input_sub_code = subject_code.strip() if (subject_code and subject_code.strip() and subject_code.lower() not in ("undefined", "null")) else ""
 
     try:
         hierarchy = extract_syllabus_hierarchy(
@@ -664,9 +676,31 @@ async def extract_syllabus_preview(
         confidence_score = validation.get("confidenceScore", 0.9)
         needs_review = validation.get("needsReview", True)
 
+        # Check if the extracted subject name matches an existing confirmed syllabus
+        is_dup = False
+        dup_type = None
+        existing_syl_id = None
+        existing_syl_name = None
+
+        if not force_reprocess:
+            dup_match = find_duplicate_syllabus(
+                user_id=current_user["id"],
+                subject_name=final_subject_name,
+                subject_code=final_subject_code
+            )
+            if dup_match:
+                is_dup = True
+                dup_type = dup_match.get("duplicate_reason", "matching_name")
+                existing_syl_id = dup_match["id"]
+                existing_syl_name = dup_match["subject_name"]
+
         return {
             "success": True,
             "cached": False,
+            "is_duplicate": is_dup,
+            "duplicate_type": dup_type,
+            "existing_syllabus_id": existing_syl_id,
+            "existing_subject_name": existing_syl_name,
             "file_hash": file_hash,
             "subject_name": final_subject_name,
             "subject_code": final_subject_code,
@@ -675,7 +709,7 @@ async def extract_syllabus_preview(
             "confidence_score": confidence_score,
             "needs_review": needs_review,
             "validation": validation,
-            "message": "Curriculum extracted. Always review and edit units/topics before confirming."
+            "message": f"Syllabus for '{existing_syl_name}' is already enrolled in your account." if is_dup else "Curriculum extracted. Always review and edit units/topics before confirming."
         }
     except Exception as exc:
         raise HTTPException(
@@ -704,7 +738,7 @@ def confirm_syllabus_endpoint(
     if not units:
         raise HTTPException(status_code=400, detail="Cannot confirm syllabus without any units or topics.")
 
-    # Save to SQLite database as confirmed
+    # Save to SQLite database as confirmed (automatically calls sync_student_partition_subjects)
     syllabus = create_or_update_syllabus(
         user_id=current_user["id"],
         subject_id=subject_id,
@@ -718,84 +752,13 @@ def confirm_syllabus_endpoint(
         confidence_score=req.hierarchy.get("validation", {}).get("confidenceScore", 1.0)
     )
 
-    # Synchronize into student partition
-    try:
-        partition_data = get_student_partition(current_user["id"])
-        if partition_data:
-            subjects_list = partition_data.get("subjects", [])
-            fe_units = []
-            for u in units:
-                fe_topics = []
-                for t in u.get("topics", []):
-                    fe_topics.append({
-                        "id": t.get("id"),
-                        "name": t.get("name"),
-                        "page_number": t.get("page_number", 1),
-                        "status": "not_assessed",
-                        "masteryScore": 0,
-                        "confidence": "none",
-                        "completed": False,
-                        "misconceptions": [],
-                        "concepts": [
-                            {
-                                "id": f"c_{t.get('id')}_{i+1}",
-                                "name": st,
-                                "description": f"Subtopic of {t.get('name')}",
-                                "masteryScore": 0,
-                                "status": "not_assessed",
-                                "confidence": "none"
-                            }
-                            for i, st in enumerate(t.get("subtopics", []))
-                        ] or [
-                            {
-                                "id": f"c_{t.get('id')}_1",
-                                "name": t.get("name"),
-                                "description": "Core concept",
-                                "masteryScore": 0,
-                                "status": "not_assessed",
-                                "confidence": "none"
-                            }
-                        ]
-                    })
-                fe_units.append({
-                    "id": u.get("id"),
-                    "title": u.get("title"),
-                    "page_number": u.get("page_number", 1),
-                    "topics": fe_topics
-                })
-
-            subj_idx = next((i for i, s in enumerate(subjects_list) if s.get("id") == subject_id), None)
-            new_fe_subj = {
-                "id": subject_id,
-                "name": sub_name,
-                "code": sub_code,
-                "status": "not_assessed",
-                "masteryScore": 0,
-                "confidence": "none",
-                "color": "#38bdf8" if any(k in sub_name.lower() for k in ["java", "oop", "code", "python"]) else "#a855f7",
-                "brainRegion": "Temporal Lobe" if any(k in sub_name.lower() for k in ["code", "prog", "java", "python"]) else "Frontal Lobe",
-                "nodeCoordinates": [0.6, 0.2, 0.4],
-                "totalTopics": sum(len(u["topics"]) for u in fe_units),
-                "completedTopics": 0,
-                "detectedMisconceptionsCount": 0,
-                "recommendedNextConcept": f"Start foundational study on {fe_units[0]['topics'][0]['name'] if fe_units and fe_units[0]['topics'] else sub_name}",
-                "units": fe_units
-            }
-
-            if subj_idx is not None:
-                subjects_list[subj_idx] = new_fe_subj
-            else:
-                subjects_list.append(new_fe_subj)
-
-            partition_data["subjects"] = subjects_list
-            save_student_partition(current_user["id"], partition_data)
-    except Exception as part_err:
-        print("Notice syncing confirmed syllabus to partition:", part_err)
+    partition_data = sync_student_partition_subjects(current_user["id"])
 
     return {
         "success": True,
         "message": "Syllabus confirmed successfully. Ready for individual topic coverage audit.",
-        "syllabus": syllabus
+        "syllabus": syllabus,
+        "partition": partition_data
     }
 
 @app.post("/api/syllabus/upload-file")

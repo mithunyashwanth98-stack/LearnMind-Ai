@@ -36,14 +36,36 @@ export const BrainKnowledgeModal: React.FC<BrainKnowledgeModalProps> = ({
   onStartRemediation,
   isNewStudent = false,
 }) => {
-  const [activeSubject, setActiveSubject] = useState<Subject>(
-    selectedSubject || subjects[0]
+  const [activeSubject, setActiveSubject] = useState<Subject | null>(
+    selectedSubject || (subjects.length > 0 ? subjects[0] : null)
   );
   const [expandedTopicId, setExpandedTopicId] = useState<string | null>('top_diff');
 
   if (!isOpen) return null;
 
-  const currentSubject = selectedSubject || activeSubject || subjects[0];
+  const currentSubject = selectedSubject || activeSubject || (subjects.length > 0 ? subjects[0] : null);
+
+  if (!currentSubject) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
+        <div className="relative w-full max-w-lg glass-panel rounded-3xl p-8 border border-cyan-500/30 text-center space-y-4">
+          <div className="p-3 rounded-2xl bg-cyan-500/10 text-cyan-400 inline-flex border border-cyan-500/20">
+            <Brain className="w-8 h-8" />
+          </div>
+          <h3 className="text-lg font-bold text-white">No Subjects Enrolled</h3>
+          <p className="text-xs text-slate-400">
+            Upload your syllabus to initialize your neural knowledge matrix.
+          </p>
+          <button
+            onClick={onClose}
+            className="px-6 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const getStatusBadge = (status: string) => {
     switch (status) {

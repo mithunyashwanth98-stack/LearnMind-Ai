@@ -28,12 +28,28 @@ export const KnowledgePage: React.FC<KnowledgePageProps> = ({
   onLaunchAssessment,
   onLaunchTutor,
 }) => {
-  const [selectedSubjectId, setSelectedSubjectId] = useState<string>(subjects[0].id);
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>(subjects[0]?.id || '');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [expandedTopicId, setExpandedTopicId] = useState<string | null>('top_diff');
 
-  const currentSubject = subjects.find((s) => s.id === selectedSubjectId) || subjects[0];
+  const currentSubject = subjects.find((s) => s.id === selectedSubjectId) || subjects[0] || null;
+
+  if (!currentSubject) {
+    return (
+      <div className="p-8 space-y-8 max-w-7xl mx-auto animate-fadeIn">
+        <div className="py-24 text-center space-y-4 max-w-xl mx-auto">
+          <div className="p-4 rounded-2xl bg-cyan-500/10 text-cyan-400 inline-flex border border-cyan-500/30">
+            <Brain className="w-10 h-10" />
+          </div>
+          <h3 className="text-xl font-bold text-white">No Subjects Enrolled Yet</h3>
+          <p className="text-xs text-slate-400">
+            Upload your syllabus in the Syllabus Intelligence Engine to generate your knowledge matrix.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const getStatusBadge = (status: string) => {
     switch (status) {

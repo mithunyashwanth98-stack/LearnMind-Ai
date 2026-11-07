@@ -60,7 +60,13 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
   onNavigateToAssessment,
   onNavigateToTutor,
 }) => {
-  const [selectedSubject, setSelectedSubject] = useState<Subject>(subjects[0] || null);
+  const [selectedSubject, setSelectedSubject] = useState<Subject | null>(subjects[0] || null);
+  const [duplicateWarning, setDuplicateWarning] = useState<{
+    isDuplicate: boolean;
+    existingSyllabusId?: string;
+    existingSubjectName?: string;
+    duplicateType?: string;
+  } | null>(null);
 
   // Modal 1: Upload & File Staging State
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -103,6 +109,8 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
         const fresh = subjects.find((s) => s.id === selectedSubject.id);
         if (fresh) setSelectedSubject(fresh);
       }
+    } else {
+      setSelectedSubject(null);
     }
   }, [subjects]);
 
@@ -230,6 +238,17 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
       setPreviewSubjectCode(res.subject_code || hierarchy.subjectCode || 'MOD-101');
       setPreviewConfidence(validation.confidenceScore ?? (res.confidence_score ?? 0.95));
       setPreviewWarnings(validation.warnings || []);
+
+      if (res.is_duplicate) {
+        setDuplicateWarning({
+          isDuplicate: true,
+          existingSyllabusId: res.existing_syllabus_id,
+          existingSubjectName: res.existing_subject_name || res.subject_name,
+          duplicateType: res.duplicate_type,
+        });
+      } else {
+        setDuplicateWarning(null);
+      }
 
       // Map backend units to frontend Unit[] format with page numbers
       const rawUnits = hierarchy.units || [];
@@ -393,7 +412,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
     };
 
     try {
-      await apiConfirmSyllabus(token, {
+      const confirmRes = await apiConfirmSyllabus(token, {
         file_hash: previewFileHash,
         subject_name: previewSubjectName.trim(),
         subject_code: previewSubjectCode.trim() || 'MOD-101',
@@ -401,8 +420,10 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
         hierarchy: hierarchyPayload,
       });
 
+      const confirmedSubjId = confirmRes.syllabus?.subject_id || `sub_${previewSubjectName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+
       const newSubject: Subject = {
-        id: `sub_${previewSubjectName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${Date.now()}`,
+        id: confirmedSubjId,
         name: previewSubjectName.trim(),
         code: previewSubjectCode.trim() || 'MOD-101',
         status: 'not_assessed',
@@ -424,6 +445,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
       setSelectedSubject(newSubject);
       setIsUploadModalOpen(false);
       setIsConfirmingSyllabus(false);
+      setDuplicateWarning(null);
 
       showToast(`✓ "${newSubject.name}" confirmed! Starting individual topic coverage walkthrough.`);
 
@@ -689,215 +711,250 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
       </div>
 
       {/* Main Content Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-        {/* Left Column: Enrolled Syllabi Navigation */}
-        <div className="space-y-3">
-          <div className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400 px-1 flex items-center justify-between">
-            <span>Enrolled Syllabi ({subjects.length})</span>
+      {subjects.length === 0 ? (
+        <div className="py-24 text-center space-y-6 max-w-2xl mx-auto animate-fadeIn">
+          <div className="inline-flex p-6 rounded-3xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 shadow-[0_0_35px_rgba(0,240,255,0.2)]">
+            <BookOpen className="w-12 h-12" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-2xl font-black text-white tracking-wide">
+              No subjects uploaded yet
+            </h3>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              Upload your first course syllabus PDF (Java, Python, C++, Engineering Math, Physics, Chemistry, OS, DBMS, etc.) to extract institutional units, inspect topics, and start your personalized cognitive learning journey.
+            </p>
+          </div>
+          <div>
+            <button
+              onClick={() => {
+                setStagedFile(null);
+                setValidationError('');
+                setExtractionError('');
+                setUploadStage('drop');
+                setEditableUnits([]);
+                setPreviewSubjectName('');
+                setPreviewSubjectCode('');
+                setDuplicateWarning(null);
+                setIsUploadModalOpen(true);
+              }}
+              className="px-8 py-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:brightness-110 text-slate-950 font-bold text-sm uppercase tracking-wider inline-flex items-center gap-3 shadow-[0_0_30px_rgba(0,240,255,0.4)] transition-all cursor-pointer hover:scale-105"
+            >
+              <Upload className="w-5 h-5" />
+              <span>Upload Your First Syllabus</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+          {/* Left Column: Enrolled Syllabi Navigation */}
+          <div className="space-y-3">
+            <div className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400 px-1 flex items-center justify-between">
+              <span>{subjects.length === 1 ? 'Enrolled Subject (1)' : `Total Subjects: ${subjects.length}`}</span>
+            </div>
+
+            {subjects.map((subj) => (
+              <div
+                key={subj.id}
+                onClick={() => setSelectedSubject(subj)}
+                className={`p-4 rounded-2xl glass-panel border cursor-pointer transition-all ${
+                  selectedSubject?.id === subj.id
+                    ? 'border-cyan-400 bg-cyan-950/40 shadow-[0_0_15px_rgba(0,240,255,0.15)]'
+                    : 'border-slate-800 hover:border-slate-700 bg-slate-900/40'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: subj.color || '#38bdf8' }}
+                    />
+                    <div className="font-bold text-sm text-white">{subj.name}</div>
+                  </div>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                    {subj.code}
+                  </span>
+                </div>
+                <div className="mt-2 text-xs text-slate-400 flex items-center justify-between">
+                  <span>{subj.units.length} Units</span>
+                  <span className="text-emerald-400 font-medium">
+                    {subj.completedTopics || 0}/{subj.totalTopics || 0} Mastered
+                  </span>
+                </div>
+                <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2.5 overflow-hidden">
+                  <div
+                    className="bg-cyan-400 h-full rounded-full transition-all"
+                    style={{
+                      width: `${subj.totalTopics ? Math.round(((subj.completedTopics || 0) / subj.totalTopics) * 100) : 0}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
 
-          {subjects.map((subj) => (
-            <div
-              key={subj.id}
-              onClick={() => setSelectedSubject(subj)}
-              className={`p-4 rounded-2xl glass-panel border cursor-pointer transition-all ${
-                selectedSubject?.id === subj.id
-                  ? 'border-cyan-400 bg-cyan-950/40 shadow-[0_0_15px_rgba(0,240,255,0.15)]'
-                  : 'border-slate-800 hover:border-slate-700 bg-slate-900/40'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className="w-3 h-3 rounded-full"
-                    style={{ backgroundColor: subj.color || '#38bdf8' }}
-                  />
-                  <div className="font-bold text-sm text-white">{subj.name}</div>
-                </div>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
-                  {subj.code}
-                </span>
-              </div>
-              <div className="mt-2 text-xs text-slate-400 flex items-center justify-between">
-                <span>{subj.units.length} Units</span>
-                <span className="text-emerald-400 font-medium">
-                  {subj.completedTopics || 0}/{subj.totalTopics || 0} Mastered
-                </span>
-              </div>
-              <div className="w-full bg-slate-800 h-1.5 rounded-full mt-2.5 overflow-hidden">
-                <div
-                  className="bg-cyan-400 h-full rounded-full transition-all"
-                  style={{
-                    width: `${subj.totalTopics ? Math.round(((subj.completedTopics || 0) / subj.totalTopics) * 100) : 0}%`,
-                  }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Right Column: Active Syllabus Inspector */}
-        <div className="lg:col-span-3 space-y-6">
-          {selectedSubject ? (
-            <GlassCard glowColor="cyan">
-              <div className="p-6 space-y-6">
-                {/* Active Subject Summary Bar */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-800">
-                  <div>
-                    <div className="flex items-center gap-3">
-                      <h3 className="text-xl font-black text-white">{selectedSubject.name}</h3>
-                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-cyan-400 font-mono border border-cyan-500/20">
-                        {selectedSubject.code}
-                      </span>
+          {/* Right Column: Active Syllabus Inspector */}
+          <div className="lg:col-span-3 space-y-6">
+            {selectedSubject ? (
+              <GlassCard glowColor="cyan">
+                <div className="p-6 space-y-6">
+                  {/* Active Subject Summary Bar */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-800">
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-xl font-black text-white">{selectedSubject.name}</h3>
+                        <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-cyan-400 font-mono border border-cyan-500/20">
+                          {selectedSubject.code}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        {selectedSubject.units.length} Units • {selectedSubject.totalTopics} Discrete Topics Grounded
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-400 mt-1">
-                      {selectedSubject.units.length} Units • {selectedSubject.totalTopics} Discrete Topics Grounded
-                    </p>
-                  </div>
 
-                  <div className="flex items-center gap-2.5">
-                    <button
-                      onClick={() => openTopicCoverageWalkthrough(selectedSubject, 0)}
-                      className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-[0_0_12px_rgba(0,240,255,0.3)] cursor-pointer"
-                    >
-                      <Target className="w-3.5 h-3.5" />
-                      <span>Audit Topic by Topic</span>
-                    </button>
-                    {onNavigateToAssessment && (
+                    <div className="flex items-center gap-2.5">
                       <button
-                        onClick={() => onNavigateToAssessment(selectedSubject.id)}
-                        className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-emerald-500/30 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer"
+                        onClick={() => openTopicCoverageWalkthrough(selectedSubject, 0)}
+                        className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-[0_0_12px_rgba(0,240,255,0.3)] cursor-pointer"
                       >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>Take Diagnostic</span>
+                        <Target className="w-3.5 h-3.5" />
+                        <span>Audit Topic by Topic</span>
                       </button>
-                    )}
+                      {onNavigateToAssessment && (
+                        <button
+                          onClick={() => onNavigateToAssessment(selectedSubject.id)}
+                          className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-emerald-500/30 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>Take Diagnostic</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                {/* Units & Topics List with Interactive Status Badges */}
-                <div className="space-y-6">
-                  {selectedSubject.units.map((unit, uIdx) => {
-                    const completedInUnit = unit.topics.filter(
-                      (t) => (t.coverageStatus === 'completed' || t.completed)
-                    ).length;
-                    const totalInUnit = unit.topics.length;
-                    const unitPct = totalInUnit > 0 ? Math.round((completedInUnit / totalInUnit) * 100) : 0;
-                    const isUnitComplete = totalInUnit > 0 && completedInUnit === totalInUnit;
+                  {/* Units & Topics List with Interactive Status Badges */}
+                  <div className="space-y-6">
+                    {selectedSubject.units.map((unit, uIdx) => {
+                      const completedInUnit = unit.topics.filter(
+                        (t) => (t.coverageStatus === 'completed' || t.completed)
+                      ).length;
+                      const totalInUnit = unit.topics.length;
+                      const unitPct = totalInUnit > 0 ? Math.round((completedInUnit / totalInUnit) * 100) : 0;
+                      const isUnitComplete = totalInUnit > 0 && completedInUnit === totalInUnit;
 
-                    return (
-                      <div key={unit.id} className="p-5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-xs font-mono font-bold text-cyan-400">
-                              UNIT {uIdx + 1}
-                            </span>
-                            <span className="text-sm font-bold text-white">{unit.title}</span>
-                            {unit.pageNumber && (
-                              <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
-                                p. {unit.pageNumber}
+                      return (
+                        <div key={unit.id} className="p-5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-mono font-bold text-cyan-400">
+                                UNIT {uIdx + 1}
                               </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`text-[11px] font-mono font-bold px-2.5 py-0.5 rounded-full border ${
-                                isUnitComplete
-                                  ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400'
-                                  : completedInUnit > 0
-                                  ? 'bg-cyan-950/50 border-cyan-500/30 text-cyan-300'
-                                  : 'bg-slate-900 border-slate-700 text-slate-400'
-                              }`}
-                            >
-                              {isUnitComplete ? '✓ Unit Complete' : `${completedInUnit}/${totalInUnit} Topics (${unitPct}%)`}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Unit-Wise Mini Progress Bar */}
-                        <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all duration-300 ${
-                              isUnitComplete
-                                ? 'bg-emerald-400'
-                                : completedInUnit > 0
-                                ? 'bg-gradient-to-r from-cyan-400 to-blue-500'
-                                : 'bg-transparent'
-                            }`}
-                            style={{ width: `${unitPct}%` }}
-                          />
-                        </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                        {unit.topics.map((topic) => {
-                          const status: CoverageStatus = topic.coverageStatus || (topic.completed ? 'completed' : 'not_started');
-                          return (
-                            <div
-                              key={topic.id}
-                              className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${
-                                status === 'completed'
-                                  ? 'bg-emerald-950/20 border-emerald-500/40'
-                                  : status === 'currently_studying'
-                                  ? 'bg-cyan-950/30 border-cyan-500/50 shadow-[0_0_10px_rgba(0,240,255,0.1)]'
-                                  : status === 'partially_covered'
-                                  ? 'bg-amber-950/20 border-amber-500/30'
-                                  : 'bg-slate-900/60 border-slate-800'
-                              }`}
-                            >
-                              <div className="flex-1 min-w-0 pr-2">
-                                <div className="font-semibold text-xs text-white truncate flex items-center gap-1.5">
-                                  <span>{topic.name}</span>
-                                  {topic.pageNumber && (
-                                    <span className="text-[9px] text-slate-500 font-mono">
-                                      [p.{topic.pageNumber}]
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-[10px] text-slate-400 mt-0.5 truncate">
-                                  {topic.concepts.length > 0
-                                    ? topic.concepts.map((c) => c.name).join(' • ')
-                                    : 'Core topic concepts'}
-                                </div>
-                              </div>
-
-                              {/* Interactive Coverage Status Badge */}
-                              <button
-                                onClick={() => handleQuickCycleStatus(topic.id, status)}
-                                title="Click to cycle status: Not Started → Partial → Studying → Completed"
-                                className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold flex items-center gap-1.5 transition-all flex-shrink-0 cursor-pointer ${
-                                  status === 'completed'
-                                    ? 'bg-emerald-500 text-slate-950 shadow-[0_0_10px_rgba(16,185,129,0.3)]'
-                                    : status === 'currently_studying'
-                                    ? 'bg-cyan-500 text-slate-950 shadow-[0_0_10px_rgba(0,240,255,0.3)]'
-                                    : status === 'partially_covered'
-                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                                    : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                              <span className="text-sm font-bold text-white">{unit.title}</span>
+                              {unit.pageNumber && (
+                                <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
+                                  p. {unit.pageNumber}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-[11px] font-mono font-bold px-2.5 py-0.5 rounded-full border ${
+                                  isUnitComplete
+                                    ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400'
+                                    : completedInUnit > 0
+                                    ? 'bg-cyan-950/50 border-cyan-500/30 text-cyan-300'
+                                    : 'bg-slate-900 border-slate-700 text-slate-400'
                                 }`}
                               >
-                                {status === 'completed' && <Check className="w-3 h-3 stroke-[3]" />}
-                                {status === 'currently_studying' && <Target className="w-3 h-3" />}
-                                {status === 'partially_covered' && <Clock className="w-3 h-3" />}
-                                <span>{formatStatusLabel(status)}</span>
-                              </button>
+                                {isUnitComplete ? '✓ Unit Complete' : `${completedInUnit}/${totalInUnit} Topics (${unitPct}%)`}
+                              </span>
                             </div>
-                          );
-                        })}
+                          </div>
+
+                          {/* Unit-Wise Mini Progress Bar */}
+                          <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ${
+                                isUnitComplete
+                                  ? 'bg-emerald-400'
+                                  : completedInUnit > 0
+                                  ? 'bg-gradient-to-r from-cyan-400 to-blue-500'
+                                  : 'bg-transparent'
+                              }`}
+                              style={{ width: `${unitPct}%` }}
+                            />
+                          </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+                          {unit.topics.map((topic) => {
+                            const status: CoverageStatus = topic.coverageStatus || (topic.completed ? 'completed' : 'not_started');
+                            return (
+                              <div
+                                key={topic.id}
+                                className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${
+                                  status === 'completed'
+                                    ? 'bg-emerald-950/20 border-emerald-500/40'
+                                    : status === 'currently_studying'
+                                    ? 'bg-cyan-950/30 border-cyan-500/50 shadow-[0_0_10px_rgba(0,240,255,0.1)]'
+                                    : status === 'partially_covered'
+                                    ? 'bg-amber-950/20 border-amber-500/30'
+                                    : 'bg-slate-900/60 border-slate-800'
+                                }`}
+                              >
+                                <div className="flex-1 min-w-0 pr-2">
+                                  <div className="font-semibold text-xs text-white truncate flex items-center gap-1.5">
+                                    <span>{topic.name}</span>
+                                    {topic.pageNumber && (
+                                      <span className="text-[9px] text-slate-500 font-mono">
+                                        [p.{topic.pageNumber}]
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 mt-0.5 truncate">
+                                    {topic.concepts.length > 0
+                                      ? topic.concepts.map((c) => c.name).join(' • ')
+                                      : 'Core topic concepts'}
+                                  </div>
+                                </div>
+
+                                {/* Interactive Coverage Status Badge */}
+                                <button
+                                  onClick={() => handleQuickCycleStatus(topic.id, status)}
+                                  title="Click to cycle status: Not Started → Partial → Studying → Completed"
+                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold flex items-center gap-1.5 transition-all flex-shrink-0 cursor-pointer ${
+                                    status === 'completed'
+                                      ? 'bg-emerald-500 text-slate-950 shadow-[0_0_10px_rgba(16,185,129,0.3)]'
+                                      : status === 'currently_studying'
+                                      ? 'bg-cyan-500 text-slate-950 shadow-[0_0_10px_rgba(0,240,255,0.3)]'
+                                      : status === 'partially_covered'
+                                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                      : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                                  }`}
+                                >
+                                  {status === 'completed' && <Check className="w-3 h-3 stroke-[3]" />}
+                                  {status === 'currently_studying' && <Target className="w-3 h-3" />}
+                                  {status === 'partially_covered' && <Clock className="w-3 h-3" />}
+                                  <span>{formatStatusLabel(status)}</span>
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                  </div>
                 </div>
-              </div>
-            </GlassCard>
-          ) : (
-            <GlassCard glowColor="none">
-              <div className="text-center py-16 text-slate-400 text-sm">
-                No syllabus enrolled yet. Click "Upload New Syllabus" to get started!
-              </div>
-            </GlassCard>
-          )}
+              </GlassCard>
+            ) : (
+              <GlassCard glowColor="none">
+                <div className="text-center py-16 text-slate-400 text-sm">
+                  Select an enrolled syllabus to view units and topics.
+                </div>
+              </GlassCard>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ============================================================= */}
       {/* MODAL 1: UPLOAD, STAGING & TWO-STAGE REVIEW/EDIT WORKFLOW    */}
@@ -1135,6 +1192,48 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
             {/* ========================================================= */}
             {uploadStage === 'review' && (
               <div className="space-y-6 animate-fadeIn">
+                {/* Duplicate Syllabus Detection Warning & Remediation Options */}
+                {duplicateWarning?.isDuplicate && (
+                  <div className="p-5 rounded-2xl bg-amber-950/40 border border-amber-500/50 space-y-3 animate-fadeIn">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <div className="text-sm font-bold text-amber-200">
+                          Duplicate Syllabus Detected
+                        </div>
+                        <p className="text-xs text-amber-300/80 mt-1">
+                          A syllabus for <strong>"{duplicateWarning.existingSubjectName}"</strong> is already enrolled in your account. You can inspect your existing syllabus or update its units and topics in-place.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const existing = subjects.find(
+                            (s) => s.id === duplicateWarning.existingSyllabusId || s.name.toLowerCase() === duplicateWarning.existingSubjectName?.toLowerCase()
+                          );
+                          if (existing) {
+                            setSelectedSubject(existing);
+                          }
+                          setIsUploadModalOpen(false);
+                          setDuplicateWarning(null);
+                        }}
+                        className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all cursor-pointer"
+                      >
+                        View Existing Syllabus
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDuplicateWarning(null)}
+                        className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition-all cursor-pointer"
+                      >
+                        Update / Overwrite Existing Syllabus
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Detected Subject & Code Editors */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-2xl bg-slate-900/80 border border-slate-800">
                   <div>
