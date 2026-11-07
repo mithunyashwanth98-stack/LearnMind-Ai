@@ -39,10 +39,14 @@ from database import (
     get_topic_knowledge_entry,
     get_all_topic_knowledge_for_syllabus,
     save_student_topic_coverage_entry,
-    get_student_topic_coverage_list
+    get_student_topic_coverage_list,
+    get_adaptive_session,
+    get_active_adaptive_session_for_user,
+    get_adaptive_responses_for_session
 )
 from email_service import send_password_reset_email
 from tutor_service import generate_tutor_response
+from adaptive_controller import AdaptiveAssessmentController
 from syllabus_service import (
     extract_text_from_pdf,
     extract_syllabus_hierarchy,
@@ -137,6 +141,15 @@ class TutorChatRequest(BaseModel):
     topic: Optional[str] = None
     subject: Optional[str] = None
     history: Optional[List[Dict[str, Any]]] = None
+
+class StartAdaptiveSessionRequest(BaseModel):
+    subject_id: str
+    topic_id: Optional[str] = None
+
+class SubmitAdaptiveAnswerRequest(BaseModel):
+    session_id: str
+    selected_option_id: str
+    active_question: dict
 
 # In-memory rate limiting map: user_id -> last_timestamp
 user_last_tutor_request: Dict[str, float] = {}
@@ -1059,6 +1072,136 @@ def get_adaptive_diagnostic_questions(
     return {
         "success": True,
         "data": res
+    }
+
+# -------------------------------------------------------------
+# PART 7: TRULY ADAPTIVE AI LEARNING & ASSESSMENT ENGINE
+# -------------------------------------------------------------
+
+@app.post("/api/adaptive-assessment/start")
+def start_adaptive_assessment_endpoint(
+    req: StartAdaptiveSessionRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Initializes a dynamic adaptive assessment session:
+    - Analyzes student syllabus coverage.
+    - Synthesizes initial Stage 1 (Easy) question using Gemini 3.8 Flash.
+    - Persists session in SQLite database.
+    """
+    subject_id = req.subject_id
+    syllabus = get_syllabus_by_subject(current_user["id"], subject_id)
+    coverage = get_student_topic_coverage_list(current_user["id"], subject_id)
+
+    hierarchy = None
+    subject_name = "Academic Curriculum"
+    if syllabus and syllabus.get("hierarchy"):
+        hierarchy = syllabus["hierarchy"]
+        subject_name = syllabus.get("subject_name", "Academic Curriculum")
+    else:
+        part = get_student_partition(current_user["id"])
+        if part:
+            subj = next((s for s in part.get("subjects", []) if s.get("id") == subject_id), None)
+            if subj:
+                subject_name = subj.get("name", "Academic Curriculum")
+                hierarchy = {"subjectName": subject_name, "units": subj.get("units", [])}
+
+    if not hierarchy:
+        raise HTTPException(
+            status_code=404,
+            detail="No confirmed syllabus found for this subject. Please enroll and confirm a syllabus first."
+        )
+
+    try:
+        session_data = AdaptiveAssessmentController.start_session(
+            user_id=current_user["id"],
+            subject_id=subject_id,
+            subject_name=subject_name,
+            hierarchy=hierarchy,
+            topic_coverage=coverage,
+            target_topic_id=req.topic_id
+        )
+        return {
+            "success": True,
+            "session": session_data
+        }
+    except Exception as e:
+        logger.error(f"Error starting adaptive session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to initialize adaptive assessment: {str(e)}")
+
+@app.post("/api/adaptive-assessment/submit")
+def submit_adaptive_answer_endpoint(
+    req: SubmitAdaptiveAnswerRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Evaluates student answer in real time, investigates misconceptions,
+    updates Bayesian mastery, and dynamically generates the next question or final report.
+    """
+    session = get_adaptive_session(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Adaptive assessment session not found.")
+    if session["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied to another student's session.")
+
+    syllabus = get_syllabus_by_subject(current_user["id"], session["subject_id"])
+    subject_name = syllabus.get("subject_name", "Academic Curriculum") if syllabus else "Academic Curriculum"
+    hierarchy = syllabus.get("hierarchy", {}) if syllabus else {}
+
+    try:
+        decision_data = AdaptiveAssessmentController.submit_answer_and_step(
+            user_id=current_user["id"],
+            session_id=req.session_id,
+            subject_name=subject_name,
+            hierarchy=hierarchy,
+            selected_option_id=req.selected_option_id,
+            active_question=req.active_question
+        )
+        return {
+            "success": True,
+            "data": decision_data
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Adaptive step error: {e}")
+        raise HTTPException(status_code=500, detail=f"Adaptive decision engine error: {str(e)}")
+
+@app.get("/api/adaptive-assessment/session/{session_id}")
+def get_adaptive_session_endpoint(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Returns adaptive session state and response trajectory."""
+    session = get_adaptive_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    if session["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    responses = get_adaptive_responses_for_session(session_id)
+    return {
+        "success": True,
+        "session": session,
+        "responses": responses
+    }
+
+@app.get("/api/adaptive-assessment/active/{subject_id}")
+def get_active_session_endpoint(
+    subject_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Checks if an in-progress adaptive assessment session exists to allow seamless resume."""
+    active_session = get_active_adaptive_session_for_user(current_user["id"], subject_id)
+    if not active_session:
+        return {"success": True, "has_active": False, "session": None}
+
+    responses = get_adaptive_responses_for_session(active_session["id"])
+    return {
+        "success": True,
+        "has_active": True,
+        "session": active_session,
+        "responses": responses
     }
 
 if __name__ == "__main__":

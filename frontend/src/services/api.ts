@@ -428,7 +428,7 @@ export async function apiToggleTopicComplete(
   return handleResponse(res);
 }
 
-// 17. Get Adaptive Diagnostic Assessment Questions
+// 17. Get Adaptive Diagnostic Assessment Questions (Legacy batch fallback)
 export async function apiGetDiagnosticQuestions(
   token: string,
   subjectId: string
@@ -442,6 +442,126 @@ export async function apiGetDiagnosticQuestions(
   };
 }> {
   const res = await fetch(`${API_BASE}/assessment/${subjectId}/questions`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  return handleResponse(res);
+}
+
+// 18. Start Adaptive Assessment Session
+export async function apiStartAdaptiveSession(
+  token: string,
+  subjectId: string,
+  topicId?: string
+): Promise<{
+  success: boolean;
+  session: {
+    session_id: string;
+    subject_id: string;
+    subject_name: string;
+    current_topic: { id: string; name: string; unitTitle: string };
+    stage: string;
+    difficulty: string;
+    total_questions_answered: number;
+    min_questions: number;
+    max_questions: number;
+    current_question: any;
+  };
+}> {
+  const res = await fetch(`${API_BASE}/adaptive-assessment/start`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      subject_id: subjectId,
+      topic_id: topicId || null,
+    }),
+  });
+  return handleResponse(res);
+}
+
+// 19. Submit Adaptive Answer and Receive Next Pedagogical Step
+export async function apiSubmitAdaptiveAnswer(
+  token: string,
+  payload: {
+    session_id: string;
+    selected_option_id: string;
+    active_question: any;
+  }
+): Promise<{
+  success: boolean;
+  data: {
+    session_id: string;
+    evaluated_answer: {
+      is_correct: boolean;
+      selected_option_id: string;
+      correct_option_id: string;
+      explanation: string;
+      diagnosed_misconception?: string;
+    };
+    bayesian_telemetry: {
+      alpha: number;
+      beta: number;
+      posterior_mean: number;
+      variance: number;
+      certainty: number;
+    };
+    pedagogical_decision: {
+      action: string;
+      reasoning: string;
+      next_difficulty: string;
+      next_stage: string;
+    };
+    total_questions_answered: number;
+    is_concluded: boolean;
+    next_question?: any;
+    final_report?: any;
+  };
+}> {
+  const res = await fetch(`${API_BASE}/adaptive-assessment/submit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse(res);
+}
+
+// 20. Check for Active In-Progress Adaptive Session (Resume)
+export async function apiGetActiveAdaptiveSession(
+  token: string,
+  subjectId: string
+): Promise<{
+  success: boolean;
+  has_active: boolean;
+  session?: any;
+  responses?: any[];
+}> {
+  const res = await fetch(`${API_BASE}/adaptive-assessment/active/${subjectId}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  return handleResponse(res);
+}
+
+// 21. Get Full Adaptive Session by ID
+export async function apiGetAdaptiveSession(
+  token: string,
+  sessionId: string
+): Promise<{
+  success: boolean;
+  session: any;
+  responses: any[];
+}> {
+  const res = await fetch(`${API_BASE}/adaptive-assessment/session/${sessionId}`, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,

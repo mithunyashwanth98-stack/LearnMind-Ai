@@ -127,6 +127,52 @@ def init_db():
     )
     """)
 
+    # Adaptive Assessment Sessions Table (Dynamic multi-stage testing with persistence)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS adaptive_assessment_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        topic_ids_json TEXT NOT NULL,
+        current_topic_id TEXT,
+        current_stage TEXT DEFAULT 'easy',
+        current_difficulty TEXT DEFAULT 'easy',
+        streak_correct INTEGER DEFAULT 0,
+        consecutive_incorrect INTEGER DEFAULT 0,
+        total_questions_answered INTEGER DEFAULT 0,
+        posterior_alpha REAL DEFAULT 1.0,
+        posterior_beta REAL DEFAULT 1.0,
+        status TEXT DEFAULT 'in_progress',
+        evidence_summary_json TEXT,
+        final_report_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+    """)
+
+    # Adaptive Question Responses Table (Granular student telemetry & cognitive evidence)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS adaptive_question_responses (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        topic_id TEXT NOT NULL,
+        concept_tested TEXT NOT NULL,
+        difficulty TEXT NOT NULL,
+        question_text TEXT NOT NULL,
+        options_json TEXT NOT NULL,
+        selected_option_id TEXT NOT NULL,
+        is_correct INTEGER NOT NULL,
+        correct_option_id TEXT NOT NULL,
+        explanation TEXT NOT NULL,
+        diagnosed_misconception TEXT,
+        pedagogical_reasoning TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES adaptive_assessment_sessions (id) ON DELETE CASCADE
+    )
+    """)
+
     conn.commit()
 
     # Seed demo student if not present
@@ -722,4 +768,208 @@ def get_student_topic_coverage_list(user_id: str, subject_id: str):
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+# -------------------------------------------------------------
+# ADAPTIVE ASSESSMENT SESSION PERSISTENCE & TELEMETRY
+# -------------------------------------------------------------
+
+def create_adaptive_session(
+    session_id: str,
+    user_id: str,
+    subject_id: str,
+    topic_ids: List[str],
+    current_topic_id: str
+) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    topic_ids_json = json.dumps(topic_ids)
+
+    cursor.execute(
+        """
+        INSERT INTO adaptive_assessment_sessions (
+            id, user_id, subject_id, topic_ids_json, current_topic_id,
+            current_stage, current_difficulty, streak_correct, consecutive_incorrect,
+            total_questions_answered, posterior_alpha, posterior_beta, status,
+            evidence_summary_json, final_report_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'easy', 'easy', 0, 0, 0, 1.0, 1.0, 'in_progress', '{}', '{}', ?, ?)
+        """,
+        (session_id, user_id, subject_id, topic_ids_json, current_topic_id, now_iso, now_iso)
+    )
+    conn.commit()
+    conn.close()
+    return get_adaptive_session(session_id)
+
+def get_adaptive_session(session_id: str) -> Optional[dict]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM adaptive_assessment_sessions WHERE id = ?", (session_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["topic_ids"] = json.loads(d.get("topic_ids_json") or "[]")
+    except Exception:
+        d["topic_ids"] = []
+    try:
+        d["evidence_summary"] = json.loads(d.get("evidence_summary_json") or "{}")
+    except Exception:
+        d["evidence_summary"] = {}
+    try:
+        d["final_report"] = json.loads(d.get("final_report_json") or "{}")
+    except Exception:
+        d["final_report"] = {}
+    return d
+
+def get_active_adaptive_session_for_user(user_id: str, subject_id: str) -> Optional[dict]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT * FROM adaptive_assessment_sessions 
+        WHERE user_id = ? AND subject_id = ? AND status = 'in_progress'
+        ORDER BY updated_at DESC LIMIT 1
+        """,
+        (user_id, subject_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return get_adaptive_session(row["id"])
+
+def update_adaptive_session(
+    session_id: str,
+    current_topic_id: Optional[str] = None,
+    current_stage: Optional[str] = None,
+    current_difficulty: Optional[str] = None,
+    streak_correct: Optional[int] = None,
+    consecutive_incorrect: Optional[int] = None,
+    total_questions_answered: Optional[int] = None,
+    posterior_alpha: Optional[float] = None,
+    posterior_beta: Optional[float] = None,
+    status: Optional[str] = None,
+    evidence_summary: Optional[dict] = None,
+    final_report: Optional[dict] = None
+) -> Optional[dict]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    updates = ["updated_at = ?"]
+    params = [now_iso]
+
+    if current_topic_id is not None:
+        updates.append("current_topic_id = ?")
+        params.append(current_topic_id)
+    if current_stage is not None:
+        updates.append("current_stage = ?")
+        params.append(current_stage)
+    if current_difficulty is not None:
+        updates.append("current_difficulty = ?")
+        params.append(current_difficulty)
+    if streak_correct is not None:
+        updates.append("streak_correct = ?")
+        params.append(streak_correct)
+    if consecutive_incorrect is not None:
+        updates.append("consecutive_incorrect = ?")
+        params.append(consecutive_incorrect)
+    if total_questions_answered is not None:
+        updates.append("total_questions_answered = ?")
+        params.append(total_questions_answered)
+    if posterior_alpha is not None:
+        updates.append("posterior_alpha = ?")
+        params.append(posterior_alpha)
+    if posterior_beta is not None:
+        updates.append("posterior_beta = ?")
+        params.append(posterior_beta)
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+    if evidence_summary is not None:
+        updates.append("evidence_summary_json = ?")
+        params.append(json.dumps(evidence_summary))
+    if final_report is not None:
+        updates.append("final_report_json = ?")
+        params.append(json.dumps(final_report))
+
+    params.append(session_id)
+    query = f"UPDATE adaptive_assessment_sessions SET {', '.join(updates)} WHERE id = ?"
+    cursor.execute(query, tuple(params))
+    conn.commit()
+    conn.close()
+    return get_adaptive_session(session_id)
+
+def save_adaptive_question_response(
+    session_id: str,
+    user_id: str,
+    topic_id: str,
+    concept_tested: str,
+    difficulty: str,
+    question_text: str,
+    options: List[dict],
+    selected_option_id: str,
+    is_correct: bool,
+    correct_option_id: str,
+    explanation: str,
+    diagnosed_misconception: Optional[str] = None,
+    pedagogical_reasoning: Optional[str] = None
+) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor()
+    resp_id = f"resp_{uuid.uuid4().hex[:14]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    options_json = json.dumps(options)
+    is_correct_int = 1 if is_correct else 0
+
+    cursor.execute(
+        """
+        INSERT INTO adaptive_question_responses (
+            id, session_id, user_id, topic_id, concept_tested, difficulty,
+            question_text, options_json, selected_option_id, is_correct,
+            correct_option_id, explanation, diagnosed_misconception,
+            pedagogical_reasoning, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            resp_id, session_id, user_id, topic_id, concept_tested, difficulty,
+            question_text, options_json, selected_option_id, is_correct_int,
+            correct_option_id, explanation, diagnosed_misconception or "",
+            pedagogical_reasoning or "", now_iso
+        )
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "id": resp_id,
+        "session_id": session_id,
+        "is_correct": is_correct,
+        "diagnosed_misconception": diagnosed_misconception,
+        "pedagogical_reasoning": pedagogical_reasoning
+    }
+
+def get_adaptive_responses_for_session(session_id: str) -> List[dict]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT * FROM adaptive_question_responses 
+        WHERE session_id = ? ORDER BY created_at ASC
+        """,
+        (session_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    res = []
+    for r in rows:
+        d = dict(r)
+        d["is_correct"] = bool(d["is_correct"])
+        try:
+            d["options"] = json.loads(d.get("options_json") or "[]")
+        except Exception:
+            d["options"] = []
+        res.append(d)
+    return res
 
