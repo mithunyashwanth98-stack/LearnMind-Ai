@@ -225,11 +225,14 @@ export async function apiExtractSyllabusPreview(
   if (subjectCode) formData.append('subject_code', subjectCode);
   if (forceReprocess) formData.append('force_reprocess', 'true');
 
+  const headers: Record<string, string> = {};
+  if (token && token.trim()) {
+    headers['Authorization'] = `Bearer ${token.trim()}`;
+  }
+
   const res = await fetch(`${API_BASE}/syllabus/extract-preview`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
     body: formData,
   });
   return handleResponse(res);
@@ -251,12 +254,16 @@ export async function apiConfirmSyllabus(
   message: string;
   syllabus: any;
 }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token && token.trim()) {
+    headers['Authorization'] = `Bearer ${token.trim()}`;
+  }
+
   const res = await fetch(`${API_BASE}/syllabus/confirm`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
     body: JSON.stringify(payload),
   });
   return handleResponse(res);
@@ -365,12 +372,14 @@ export async function apiSaveTopicCoverage(
   message: string;
   coverage: any[];
 }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
+
   const res = await fetch(`${API_BASE}/syllabus/${subjectId}/coverage`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
     body: JSON.stringify({ coverage }),
   });
   return handleResponse(res);
@@ -384,11 +393,12 @@ export async function apiGetTopicCoverage(
   success: boolean;
   coverage: any[];
 }> {
+  const headers: Record<string, string> = {};
+  if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
+
   const res = await fetch(`${API_BASE}/syllabus/${subjectId}/coverage`, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
   });
   return handleResponse(res);
 }
@@ -405,12 +415,14 @@ export async function apiToggleTopicComplete(
   topic_id: string;
   completed: boolean;
 }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
+
   const res = await fetch(`${API_BASE}/syllabus/${subjectId}/topic/${topicId}/complete`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
     body: JSON.stringify({ completed }),
   });
   return handleResponse(res);

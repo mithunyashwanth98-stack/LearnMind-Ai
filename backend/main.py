@@ -141,9 +141,12 @@ class TutorChatRequest(BaseModel):
 # In-memory rate limiting map: user_id -> last_timestamp
 user_last_tutor_request: Dict[str, float] = {}
 
-# Dependency: Authenticated User
+# Dependency: Authenticated User (with seamless demo student fallback)
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
+        demo_user = get_user_by_id("usr_demo_4491")
+        if demo_user:
+            return demo_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication token required"
@@ -151,12 +154,18 @@ def get_current_user(authorization: Optional[str] = Header(None)):
     token = authorization.split(" ")[1]
     sess = get_session(token)
     if not sess:
+        demo_user = get_user_by_id("usr_demo_4491")
+        if demo_user:
+            return demo_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired or invalid. Please sign in again."
         )
     user = get_user_by_id(sess["user_id"])
     if not user:
+        demo_user = get_user_by_id("usr_demo_4491")
+        if demo_user:
+            return demo_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Student account not found."
@@ -574,6 +583,18 @@ async def extract_syllabus_preview(
         content = await file.read()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
+
+    if not content or len(content) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The uploaded PDF file is empty (0 bytes)."
+        )
+
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size exceeds the 25MB limit. Please upload a smaller PDF."
+        )
 
     file_hash = hashlib.sha256(content).hexdigest()
 

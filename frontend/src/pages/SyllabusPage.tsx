@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Subject, Unit, Topic } from '../types';
 import { GlassCard } from '../components/GlassCard';
 import {
@@ -21,7 +21,8 @@ import {
   X,
   RefreshCw,
   Layers,
-  HelpCircle
+  HelpCircle,
+  FolderOpen
 } from 'lucide-react';
 import {
   apiExtractSyllabusPreview,
@@ -61,12 +62,15 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
 }) => {
   const [selectedSubject, setSelectedSubject] = useState<Subject>(subjects[0] || null);
 
-  // Modal 1: Upload & Review State
+  // Modal 1: Upload & File Staging State
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
-  const [uploadStage, setUploadStage] = useState<'drop' | 'extracting' | 'review'>('drop');
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadStage, setUploadStage] = useState<'drop' | 'staged' | 'extracting' | 'review'>('drop');
+  const [stagedFile, setStagedFile] = useState<File | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [validationError, setValidationError] = useState('');
   const [extractionProgress, setExtractionProgress] = useState('');
   const [extractionError, setExtractionError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Editable Preview State (Stage 1: Review & Edit)
   const [previewSubjectName, setPreviewSubjectName] = useState('');
@@ -116,10 +120,90 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 1. EXTRACT SYLLABUS PREVIEW (DOES NOT AUTO-SAVE)
+  // 1. FILE SELECTION & VALIDATION HANDLERS
   // -------------------------------------------------------------
-  const handlePdfFileSelect = async (file: File) => {
-    setUploadedFile(file);
+  const handleFileSelected = (file: File) => {
+    setValidationError('');
+    setExtractionError('');
+
+    if (!file) return;
+
+    // Validate file type
+    const isPdf =
+      file.type === 'application/pdf' ||
+      file.name.toLowerCase().endsWith('.pdf');
+
+    if (!isPdf) {
+      setValidationError(
+        `Invalid file format: "${file.name}". Please upload a valid PDF document (.pdf).`
+      );
+      return;
+    }
+
+    // Validate file size (max 25MB)
+    const MAX_SIZE_BYTES = 25 * 1024 * 1024;
+    if (file.size > MAX_SIZE_BYTES) {
+      setValidationError(
+        `File is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum allowed size is 25MB.`
+      );
+      return;
+    }
+
+    if (file.size === 0) {
+      setValidationError(`The selected PDF file is empty (0 bytes).`);
+      return;
+    }
+
+    // Set staged file and transition to staged review card
+    setStagedFile(file);
+    setUploadStage('staged');
+
+    // Reset input value so the exact same file can be selected again if replaced
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFileSelected(e.dataTransfer.files[0]);
+    }
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  // -------------------------------------------------------------
+  // 2. EXTRACT SYLLABUS PREVIEW (GEMINI ANALYSIS)
+  // -------------------------------------------------------------
+  const handleStartExtraction = async () => {
+    if (!stagedFile) return;
+
     setUploadStage('extracting');
     setExtractionError('');
     setExtractionProgress('Reading binary PDF byte stream via PyMuPDF (fitz)...');
@@ -133,7 +217,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
     }, 2800);
 
     try {
-      const res = await apiExtractSyllabusPreview(token, file, undefined, undefined, false);
+      const res = await apiExtractSyllabusPreview(token, stagedFile, undefined, undefined, false);
 
       clearTimeout(progressTimer1);
       clearTimeout(progressTimer2);
@@ -142,7 +226,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
       const validation = res.validation || hierarchy.validation || {};
 
       setPreviewFileHash(res.file_hash || '');
-      setPreviewSubjectName(res.subject_name || hierarchy.subjectName || file.name.replace(/\.[^/.]+$/, ''));
+      setPreviewSubjectName(res.subject_name || hierarchy.subjectName || stagedFile.name.replace(/\.[^/.]+$/, ''));
       setPreviewSubjectCode(res.subject_code || hierarchy.subjectCode || 'MOD-101');
       setPreviewConfidence(validation.confidenceScore ?? (res.confidence_score ?? 0.95));
       setPreviewWarnings(validation.warnings || []);
@@ -179,13 +263,13 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
     } catch (err: any) {
       clearTimeout(progressTimer1);
       clearTimeout(progressTimer2);
-      setUploadStage('drop');
+      setUploadStage('staged');
       setExtractionError(err.message || 'Failed to extract syllabus. Please check the PDF format.');
     }
   };
 
   // -------------------------------------------------------------
-  // 2. EDITING HANDLERS FOR EXTRACTED SYLLABUS
+  // 3. EDITING HANDLERS FOR EXTRACTED SYLLABUS
   // -------------------------------------------------------------
   const handleUpdateUnitTitle = (unitIndex: number, newTitle: string) => {
     setEditableUnits((prev) =>
@@ -269,7 +353,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 3. CONFIRM & PERSIST SYLLABUS, THEN START INDIVIDUAL TOPIC AUDIT
+  // 4. CONFIRM & PERSIST SYLLABUS, THEN START INDIVIDUAL TOPIC AUDIT
   // -------------------------------------------------------------
   const handleConfirmAndStartAudit = async () => {
     if (!previewSubjectName.trim() || editableUnits.length === 0) return;
@@ -313,7 +397,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
         file_hash: previewFileHash,
         subject_name: previewSubjectName.trim(),
         subject_code: previewSubjectCode.trim() || 'MOD-101',
-        original_filename: uploadedFile?.name || 'Syllabus.pdf',
+        original_filename: stagedFile?.name || 'Syllabus.pdf',
         hierarchy: hierarchyPayload,
       });
 
@@ -357,7 +441,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 4. TOPIC-BY-TOPIC COVERAGE WALKTHROUGH LOGIC (MILESTONE 2)
+  // 5. TOPIC-BY-TOPIC COVERAGE WALKTHROUGH LOGIC (MILESTONE 2)
   // -------------------------------------------------------------
   const getFlattenedTopics = (subject: Subject | null): FlattenedTopicItem[] => {
     if (!subject) return [];
@@ -501,7 +585,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 5. IN-PAGE QUICK TOPIC STATUS TOGGLE
+  // 6. IN-PAGE QUICK TOPIC STATUS TOGGLE
   // -------------------------------------------------------------
   const handleQuickCycleStatus = async (topicId: string, currentStatus: CoverageStatus) => {
     if (!selectedSubject) return;
@@ -587,15 +671,16 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
 
           <button
             onClick={() => {
-              setUploadedFile(null);
-              setUploadStage('drop');
+              setStagedFile(null);
+              setValidationError('');
               setExtractionError('');
+              setUploadStage('drop');
               setEditableUnits([]);
               setPreviewSubjectName('');
               setPreviewSubjectCode('');
               setIsUploadModalOpen(true);
             }}
-            className="px-5 py-2.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:brightness-110 text-slate-950 font-bold text-xs uppercase tracking-wider flex items-center gap-2 shadow-[0_0_20px_rgba(0,240,255,0.3)] transition-all"
+            className="px-5 py-2.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:brightness-110 text-slate-950 font-bold text-xs uppercase tracking-wider flex items-center gap-2 shadow-[0_0_20px_rgba(0,240,255,0.3)] transition-all cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Upload New Syllabus</span>
@@ -673,7 +758,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   <div className="flex items-center gap-2.5">
                     <button
                       onClick={() => openTopicCoverageWalkthrough(selectedSubject, 0)}
-                      className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-[0_0_12px_rgba(0,240,255,0.3)]"
+                      className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-[0_0_12px_rgba(0,240,255,0.3)] cursor-pointer"
                     >
                       <Target className="w-3.5 h-3.5" />
                       <span>Audit Topic by Topic</span>
@@ -681,7 +766,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                     {onNavigateToAssessment && (
                       <button
                         onClick={() => onNavigateToAssessment(selectedSubject.id)}
-                        className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-emerald-500/30 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5"
+                        className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-emerald-500/30 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer"
                       >
                         <Sparkles className="w-3.5 h-3.5" />
                         <span>Take Diagnostic</span>
@@ -743,11 +828,11 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                                 </div>
                               </div>
 
-                              {/* Interactive Coverage Status Badge (1-click cycle to update) */}
+                              {/* Interactive Coverage Status Badge */}
                               <button
                                 onClick={() => handleQuickCycleStatus(topic.id, status)}
                                 title="Click to cycle status: Not Started → Partial → Studying → Completed"
-                                className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold flex items-center gap-1.5 transition-all flex-shrink-0 ${
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold flex items-center gap-1.5 transition-all flex-shrink-0 cursor-pointer ${
                                   status === 'completed'
                                     ? 'bg-emerald-500 text-slate-950 shadow-[0_0_10px_rgba(16,185,129,0.3)]'
                                     : status === 'currently_studying'
@@ -782,12 +867,25 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
       </div>
 
       {/* ============================================================= */}
-      {/* MODAL 1: UPLOAD, EXTRACT & TWO-STAGE REVIEW/EDIT WORKFLOW    */}
+      {/* MODAL 1: UPLOAD, STAGING & TWO-STAGE REVIEW/EDIT WORKFLOW    */}
       {/* ============================================================= */}
       {isUploadModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-fadeIn">
           <div className="relative w-full max-w-3xl glass-panel rounded-3xl p-6 border border-cyan-500/30 space-y-6 max-h-[92vh] overflow-y-auto">
-            {/* Header */}
+            {/* Hidden native file input element */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,application/pdf"
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  handleFileSelected(e.target.files[0]);
+                }
+              }}
+            />
+
+            {/* Modal Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 rounded-xl bg-cyan-500/10 text-cyan-400">
@@ -795,78 +893,215 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-white">
-                    {uploadStage === 'review' ? 'Review & Edit Extracted Syllabus' : 'Upload Course Syllabus PDF'}
+                    {uploadStage === 'review'
+                      ? 'Review & Edit Extracted Syllabus'
+                      : uploadStage === 'staged'
+                      ? 'Confirm Selected Syllabus Document'
+                      : 'Upload Course Syllabus PDF'}
                   </h3>
                   <p className="text-xs text-slate-400">
                     {uploadStage === 'review'
                       ? 'Confirm detected subject, units and topics before proceeding to coverage walkthrough.'
+                      : uploadStage === 'staged'
+                      ? 'Verify document details before launching Gemini AI syllabus analysis.'
                       : 'PyMuPDF text stream extraction • Multi-subject Gemini AI curriculum deconstruction'}
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => setIsUploadModalOpen(false)}
-                className="text-slate-400 hover:text-white p-2"
+                className="text-slate-400 hover:text-white p-2 cursor-pointer transition-colors"
+                title="Close Modal"
               >
                 ✕
               </button>
             </div>
 
-            {/* STAGE A: FILE DROPZONE */}
+            {/* ========================================================= */}
+            {/* STAGE A: FILE DROPZONE & BROWSE SELECTION                 */}
+            {/* ========================================================= */}
             {uploadStage === 'drop' && (
               <div className="space-y-4">
-                <div className="p-8 border-2 border-dashed border-cyan-500/40 rounded-2xl bg-cyan-950/10 text-center hover:border-cyan-400 transition-colors cursor-pointer relative">
-                  <input
-                    type="file"
-                    accept=".pdf"
-                    onChange={(e) => {
-                      if (e.target.files && e.target.files[0]) {
-                        handlePdfFileSelect(e.target.files[0]);
-                      }
-                    }}
-                    className="absolute inset-0 opacity-0 cursor-pointer"
-                  />
-                  <div className="flex flex-col items-center justify-center space-y-3">
-                    <div className="p-3.5 rounded-full bg-cyan-500/20 text-cyan-400 animate-bounce">
-                      <Upload className="w-6 h-6" />
+                <div
+                  onDragOver={handleDragOver}
+                  onDragEnter={handleDragEnter}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`p-10 border-2 border-dashed rounded-2xl text-center transition-all cursor-pointer select-none ${
+                    isDragging
+                      ? 'border-cyan-400 bg-cyan-500/15 shadow-[0_0_30px_rgba(0,240,255,0.25)] scale-[1.01]'
+                      : 'border-cyan-500/40 bg-cyan-950/10 hover:border-cyan-400 hover:bg-cyan-950/20'
+                  }`}
+                >
+                  <div className="flex flex-col items-center justify-center space-y-4 pointer-events-none">
+                    <div
+                      className={`p-4 rounded-full transition-all ${
+                        isDragging ? 'bg-cyan-400 text-slate-950 scale-110' : 'bg-cyan-500/20 text-cyan-400 animate-bounce'
+                      }`}
+                    >
+                      <Upload className="w-8 h-8" />
                     </div>
-                    <div className="text-sm font-bold text-white">
-                      Drop your Course Syllabus PDF here or click to Browse
+
+                    <div>
+                      <div className="text-base font-bold text-white tracking-wide">
+                        {isDragging ? 'Drop your syllabus PDF here now' : 'Drag & drop your syllabus PDF here'}
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Supports Java OOP, Python, C++, Engineering Math, Physics, Chemistry, DBMS, OS, Networks, etc.
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-400">
-                      Supports any academic subject: Java, OOP, Python, C++, Engineering Math, Physics, DBMS, Networks, etc.
-                    </p>
+
+                    <div className="flex items-center gap-3 pt-2">
+                      <span className="text-xs text-slate-500">— OR —</span>
+                    </div>
+
+                    {/* Dedicated Browse Button */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                      className="pointer-events-auto px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase tracking-wider flex items-center gap-2 shadow-[0_0_15px_rgba(0,240,255,0.3)] transition-all cursor-pointer"
+                    >
+                      <FolderOpen className="w-4 h-4" />
+                      <span>Browse Computer Files</span>
+                    </button>
+
+                    <span className="text-[11px] text-slate-500 font-mono">
+                      PDF files only • Up to 25MB
+                    </span>
                   </div>
                 </div>
 
-                {extractionError && (
-                  <div className="p-4 rounded-xl bg-rose-950/30 border border-rose-500/40 text-xs text-rose-300 flex items-center gap-2">
+                {/* Validation or extraction errors */}
+                {(validationError || extractionError) && (
+                  <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/50 text-xs text-rose-300 flex items-center gap-2.5 animate-fadeIn">
                     <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
-                    <span>{extractionError}</span>
+                    <span>{validationError || extractionError}</span>
                   </div>
                 )}
               </div>
             )}
 
-            {/* STAGE B: EXTRACTION IN PROGRESS */}
+            {/* ========================================================= */}
+            {/* STAGE B: STAGED FILE CARD (VALIDATED & READY TO ANALYZE)  */}
+            {/* ========================================================= */}
+            {uploadStage === 'staged' && stagedFile && (
+              <div className="space-y-6 animate-fadeIn">
+                <div className="p-6 rounded-2xl bg-slate-900/90 border border-cyan-500/40 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="p-3.5 rounded-2xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 relative flex-shrink-0">
+                        <FileText className="w-8 h-8" />
+                        <span className="absolute -top-1 -right-1 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-500 text-slate-950">
+                          PDF
+                        </span>
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="font-bold text-sm text-white truncate max-w-md">
+                          {stagedFile.name}
+                        </h4>
+                        <div className="flex items-center gap-3 mt-1 text-xs text-slate-400 font-mono">
+                          <span>Size: {formatFileSize(stagedFile.size)}</span>
+                          <span>•</span>
+                          <span className="text-emerald-400 flex items-center gap-1 font-semibold">
+                            <Check className="w-3.5 h-3.5 stroke-[3]" />
+                            Validated PDF
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 self-end sm:self-center">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="Select a different PDF file"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Replace</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStagedFile(null);
+                          setUploadStage('drop');
+                        }}
+                        className="p-2 rounded-xl bg-slate-800 hover:bg-rose-950/40 hover:text-rose-400 text-slate-400 text-xs transition-colors cursor-pointer"
+                        title="Remove file"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-cyan-950/20 border border-cyan-500/20 text-xs text-cyan-300 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-cyan-400 flex-shrink-0" />
+                    <span>
+                      Ready to analyze! Gemini will deconstruct units, chapters, topics, subtopics and page references without altering your original document.
+                    </span>
+                  </div>
+                </div>
+
+                {extractionError && (
+                  <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/50 text-xs text-rose-300 flex items-center gap-2.5 animate-fadeIn">
+                    <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                    <span>{extractionError}</span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStagedFile(null);
+                      setUploadStage('drop');
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 transition-colors cursor-pointer"
+                  >
+                    Back to File Picker
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleStartExtraction}
+                    className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:brightness-110 text-slate-950 font-bold text-xs uppercase tracking-wider flex items-center gap-2 shadow-[0_0_20px_rgba(0,240,255,0.35)] transition-all cursor-pointer"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>Analyze & Extract Syllabus</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ========================================================= */}
+            {/* STAGE C: EXTRACTION IN PROGRESS (ANIMATED PROGRESS)       */}
+            {/* ========================================================= */}
             {uploadStage === 'extracting' && (
-              <div className="py-12 px-6 text-center space-y-4">
+              <div className="py-12 px-6 text-center space-y-4 animate-fadeIn">
                 <div className="inline-flex p-4 rounded-full bg-cyan-500/10 text-cyan-400 animate-spin">
                   <RefreshCw className="w-8 h-8" />
                 </div>
                 <div className="text-sm font-bold text-white font-mono">{extractionProgress}</div>
-                <div className="w-64 mx-auto bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                  <div className="bg-cyan-400 h-full animate-pulse w-3/4 rounded-full" />
+                <div className="w-64 mx-auto bg-slate-800 h-2 rounded-full overflow-hidden">
+                  <div className="bg-gradient-to-r from-cyan-400 to-blue-500 h-full animate-pulse w-3/4 rounded-full" />
                 </div>
                 <p className="text-xs text-slate-400">
-                  {uploadedFile ? uploadedFile.name : 'Processing document...'}
+                  {stagedFile ? stagedFile.name : 'Processing document...'}
                 </p>
               </div>
             )}
 
-            {/* STAGE C: REVIEW & EDIT EXTRACTED SYLLABUS (STAGE 1) */}
+            {/* ========================================================= */}
+            {/* STAGE D: REVIEW & EDIT EXTRACTED SYLLABUS (STAGE 1)       */}
+            {/* ========================================================= */}
             {uploadStage === 'review' && (
-              <div className="space-y-6">
+              <div className="space-y-6 animate-fadeIn">
                 {/* Detected Subject & Code Editors */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-2xl bg-slate-900/80 border border-slate-800">
                   <div>
@@ -953,7 +1188,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                           <button
                             type="button"
                             onClick={() => handleDeleteUnit(uIdx)}
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-900 transition-colors"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-900 transition-colors cursor-pointer"
                             title="Delete Unit"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -979,7 +1214,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                             <button
                               type="button"
                               onClick={() => handleDeleteTopic(uIdx, tIdx)}
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 transition-colors"
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
                               title="Delete Topic"
                             >
                               <Trash2 className="w-3 h-3" />
@@ -1007,7 +1242,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                           <button
                             type="button"
                             onClick={() => handleAddTopicToUnit(uIdx)}
-                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-semibold flex items-center gap-1"
+                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-semibold flex items-center gap-1 cursor-pointer"
                           >
                             <Plus className="w-3 h-3" />
                             <span>Add</span>
@@ -1020,7 +1255,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   <button
                     type="button"
                     onClick={handleAddNewUnit}
-                    className="w-full py-2.5 rounded-xl border border-dashed border-slate-700 hover:border-cyan-400/60 text-slate-400 hover:text-cyan-300 text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
+                    className="w-full py-2.5 rounded-xl border border-dashed border-slate-700 hover:border-cyan-400/60 text-slate-400 hover:text-cyan-300 text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>Add Another Academic Unit / Module</span>
@@ -1031,8 +1266,11 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                 <div className="flex items-center justify-between gap-3 pt-4 border-t border-slate-800">
                   <button
                     type="button"
-                    onClick={() => setUploadStage('drop')}
-                    className="px-4 py-2 rounded-xl bg-slate-800 text-xs text-slate-300 hover:bg-slate-700"
+                    onClick={() => {
+                      setStagedFile(null);
+                      setUploadStage('drop');
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-800 text-xs text-slate-300 hover:bg-slate-700 cursor-pointer"
                   >
                     Re-upload Document
                   </button>
@@ -1045,7 +1283,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                       editableUnits.reduce((acc, u) => acc + u.topics.length, 0) === 0 ||
                       isConfirmingSyllabus
                     }
-                    className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:brightness-110 disabled:opacity-50 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all shadow-[0_0_15px_rgba(0,240,255,0.3)] flex items-center gap-2"
+                    className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:brightness-110 disabled:opacity-50 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all shadow-[0_0_15px_rgba(0,240,255,0.3)] flex items-center gap-2 cursor-pointer"
                   >
                     {isConfirmingSyllabus ? (
                       <>
@@ -1096,13 +1334,13 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   <button
                     type="button"
                     onClick={() => setAuditViewMode(auditViewMode === 'matrix' ? 'card' : 'matrix')}
-                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-mono transition-colors"
+                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-mono transition-colors cursor-pointer"
                   >
                     {auditViewMode === 'matrix' ? 'Card Mode' : 'Grid Mode'}
                   </button>
                   <button
                     onClick={() => setIsAuditModalOpen(false)}
-                    className="text-slate-400 hover:text-white p-2"
+                    className="text-slate-400 hover:text-white p-2 cursor-pointer"
                     title="Close & Save (Progress preserved)"
                   >
                     ✕
@@ -1176,7 +1414,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   <button
                     type="button"
                     onClick={() => handleAnswerTopic(currentItem.topic.id, 'completed')}
-                    className={`p-4 rounded-2xl border text-left transition-all ${
+                    className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
                       coverageMap[currentItem.topic.id] === 'completed'
                         ? 'bg-emerald-950/40 border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.3)]'
                         : 'bg-slate-900/60 border-slate-800 hover:border-emerald-500/50 hover:bg-slate-900'
@@ -1199,7 +1437,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   <button
                     type="button"
                     onClick={() => handleAnswerTopic(currentItem.topic.id, 'currently_studying')}
-                    className={`p-4 rounded-2xl border text-left transition-all ${
+                    className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
                       coverageMap[currentItem.topic.id] === 'currently_studying'
                         ? 'bg-cyan-950/40 border-cyan-400 shadow-[0_0_15px_rgba(0,240,255,0.3)]'
                         : 'bg-slate-900/60 border-slate-800 hover:border-cyan-500/50 hover:bg-slate-900'
@@ -1222,7 +1460,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   <button
                     type="button"
                     onClick={() => handleAnswerTopic(currentItem.topic.id, 'partially_covered')}
-                    className={`p-4 rounded-2xl border text-left transition-all ${
+                    className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
                       coverageMap[currentItem.topic.id] === 'partially_covered'
                         ? 'bg-amber-950/40 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
                         : 'bg-slate-900/60 border-slate-800 hover:border-amber-500/50 hover:bg-slate-900'
@@ -1245,7 +1483,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   <button
                     type="button"
                     onClick={() => handleAnswerTopic(currentItem.topic.id, 'not_started')}
-                    className={`p-4 rounded-2xl border text-left transition-all ${
+                    className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
                       coverageMap[currentItem.topic.id] === 'not_started'
                         ? 'bg-slate-800 border-slate-400'
                         : 'bg-slate-900/60 border-slate-800 hover:border-slate-600 hover:bg-slate-900'
@@ -1271,7 +1509,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                     type="button"
                     disabled={currentTopicIndex === 0}
                     onClick={() => setCurrentTopicIndex((prev) => Math.max(0, prev - 1))}
-                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-xs font-semibold text-slate-300 flex items-center gap-1.5 transition-colors"
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-xs font-semibold text-slate-300 flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
                     <ArrowLeft className="w-3.5 h-3.5" />
                     <span>Previous</span>
@@ -1284,7 +1522,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                         setIsAuditModalOpen(false);
                         showToast('✓ Coverage progress saved automatically! You can resume anytime.');
                       }}
-                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 transition-colors"
+                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 transition-colors cursor-pointer"
                     >
                       Save & Exit For Later
                     </button>
@@ -1293,7 +1531,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                       <button
                         type="button"
                         onClick={() => setCurrentTopicIndex((prev) => prev + 1)}
-                        className="px-4 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                        className="px-4 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
                         <span>Next Topic</span>
                         <ArrowRight className="w-3.5 h-3.5" />
@@ -1302,7 +1540,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                       <button
                         type="button"
                         onClick={() => setAuditViewMode('summary')}
-                        className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold uppercase tracking-wider transition-colors"
+                        className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer"
                       >
                         Finish Audit
                       </button>
@@ -1338,14 +1576,14 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                                 setCurrentTopicIndex(globalIdx !== -1 ? globalIdx : 0);
                                 setAuditViewMode('card');
                               }}
-                              className="font-medium text-slate-200 hover:text-cyan-300 text-left truncate flex-1 pr-2"
+                              className="font-medium text-slate-200 hover:text-cyan-300 text-left truncate flex-1 pr-2 cursor-pointer"
                             >
                               {t.name}
                             </button>
                             <button
                               type="button"
                               onClick={() => handleAnswerTopic(t.id, status === 'completed' ? 'not_started' : 'completed')}
-                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold cursor-pointer ${
                                 status === 'completed'
                                   ? 'bg-emerald-500 text-slate-950'
                                   : status === 'currently_studying'
@@ -1430,7 +1668,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                         setIsAuditModalOpen(false);
                         onNavigateToAssessment(auditSubject.id);
                       }}
-                      className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:brightness-110 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all flex items-center justify-center gap-2"
+                      className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:brightness-110 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Sparkles className="w-4 h-4" />
                       <span>Take Diagnostic on Completed Topics</span>
@@ -1444,7 +1682,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                         setIsAuditModalOpen(false);
                         onNavigateToTutor(auditSubject.id, currentFocusTopicId);
                       }}
-                      className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-bold text-xs uppercase tracking-wider transition-all"
+                      className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
                     >
                       <span>Open AI Tutor</span>
                     </button>
@@ -1453,7 +1691,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsAuditModalOpen(false)}
-                    className="w-full sm:w-auto px-5 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold"
+                    className="w-full sm:w-auto px-5 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold cursor-pointer"
                   >
                     View Syllabus
                   </button>

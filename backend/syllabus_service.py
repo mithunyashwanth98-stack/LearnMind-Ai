@@ -127,7 +127,21 @@ def clean_json_response(raw_text: str) -> dict:
         start = text.find('{')
         end = text.rfind('}')
         if start != -1 and end != -1 and end > start:
-            return json.loads(text[start:end+1])
+            candidate = text[start:end+1]
+            candidate_cleaned = re.sub(r',\s*([\]}])', r'\1', candidate)
+            try:
+                return json.loads(candidate_cleaned)
+            except json.JSONDecodeError:
+                pass
+        # Attempt bracket repair if truncated
+        open_braces = text.count('{') - text.count('}')
+        open_brackets = text.count('[') - text.count(']')
+        if open_braces > 0 or open_brackets > 0:
+            repaired = text.rstrip(', \r\n\t') + (']' * max(0, open_brackets)) + ('}' * max(0, open_braces))
+            try:
+                return json.loads(repaired)
+            except Exception:
+                pass
         raise ValueError("Failed to parse valid structured JSON from AI extraction output.")
 
 # -------------------------------------------------------------
@@ -509,7 +523,7 @@ DOCUMENT CONTENT:
 
     config = types.GenerateContentConfig(
         temperature=0.2,
-        max_output_tokens=3800,
+        max_output_tokens=8192,
         response_mime_type="application/json",
         response_schema=SyllabusDeconstructionSchema
     )
