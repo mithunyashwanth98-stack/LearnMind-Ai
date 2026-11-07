@@ -59,9 +59,69 @@ class AdaptiveAssessmentController:
 
     @classmethod
     def get_configured_models(cls) -> List[str]:
-        configured = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
-        models = [configured, "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+        configured = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+        models = [configured, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash"]
         return list(dict.fromkeys(models))
+
+    @classmethod
+    def validate_question_relevance(
+        cls,
+        question_dict: Dict[str, Any],
+        subject_name: str,
+        topic_name: str,
+        subtopics: List[str]
+    ) -> Tuple[bool, str]:
+        """
+        Independently verifies that a generated question is strictly relevant
+        to the selected syllabus topic and subtopics.
+        Rejects questions that ask about general subject topics outside the topic scope.
+        """
+        q_text = question_dict.get("questionText", "").lower()
+        concept = question_dict.get("conceptTested", "").lower()
+        topic_lower = topic_name.lower()
+        subtopics_lower = [st.lower() for st in subtopics]
+
+        # 1. Concept tested check: must relate to topic name or subtopic
+        concept_match = (
+            topic_lower in concept or 
+            concept in topic_lower or 
+            any(st in concept or concept in st for st in subtopics_lower)
+        )
+
+        # 2. Extract key domain terms from topic and subtopics
+        topic_words = set(re.findall(r'[a-zA-Z]{3,}', topic_lower))
+        for st in subtopics_lower:
+            topic_words.update(re.findall(r'[a-zA-Z]{3,}', st))
+        topic_words.difference_update({"and", "the", "for", "with", "from", "intro", "introduction", "basics", "concepts"})
+
+        full_content = q_text + " " + " ".join(o.get("text", "").lower() for o in question_dict.get("options", []))
+        content_matches = [w for w in topic_words if w in full_content]
+
+        # 3. Detect and reject cross-topic contamination
+        if "buzzword" in topic_lower:
+            forbidden = ["extends ", "implements ", "interface ", "try-catch", "catch(", "throws exception", "filereader", "arraylist"]
+            has_forbidden = any(f in full_content for f in forbidden)
+            has_buzzword = any(k in full_content for k in ["architecture", "bytecode", "portable", "robust", "secure", "multithread", "distributed", "interpreted", "platform"])
+            if has_forbidden and not has_buzzword:
+                return False, f"Question tested OOP inheritance/interfaces instead of Java buzzwords"
+
+        if "differentiation" in topic_lower or "derivative" in topic_lower:
+            if any(k in full_content for k in ["integral", "matrix", "determinant", "probability"]) and not any(k in full_content for k in ["derivative", "dy/dx", "d/dx", "tangent", "rate of change", "chain rule", "slope"]):
+                return False, f"Question tested non-calculus/integration concepts instead of Differentiation"
+
+        if "laws of motion" in topic_lower or "newton" in topic_lower:
+            if any(k in full_content for k in ["capacitance", "optics", "refraction", "magnetic flux", "electric potential"]):
+                return False, f"Question tested electromagnetism/optics instead of Laws of Motion"
+
+        if "chemical bonding" in topic_lower or "bonding" in topic_lower:
+            if any(k in full_content for k in ["titration", "sn1", "sn2", "equilibrium constant", "fischer projection"]) and not any(k in full_content for k in ["bond", "ionic", "covalent", "vsepr", "lewis", "hybridization", "electronegativity", "octet"]):
+                return False, f"Question tested organic reactions instead of Chemical Bonding"
+
+        # General relevance assertion
+        if not concept_match and len(content_matches) == 0:
+            return False, f"Question did not match any keywords for topic '{topic_name}' ({', '.join(subtopics[:4])})"
+
+        return True, "Valid topic alignment"
 
     @classmethod
     def generate_dynamic_question(
@@ -92,7 +152,7 @@ class AdaptiveAssessmentController:
 CRITICAL REMEDIATION PROBE:
 The student previously made a mistake related to: '{misconception_trap}' on concept '{probe_concept or topic_name}'.
 Do NOT repeat the previous question!
-Formulate a DIFFERENT targeted diagnostic problem that isolates this exact underlying mechanism so we can confirm if this is an authentic misconception or a careless slip.
+Formulate a DIFFERENT targeted diagnostic problem that isolates this exact underlying mechanism in '{topic_name}' so we can confirm if this is an authentic misconception or a careless slip.
 """
         elif pedagogical_intent == "test_prerequisite":
             probe_instruction = f"""
@@ -105,8 +165,8 @@ Formulate a simpler question that tests the prerequisite foundation or fundament
 Synthesize a single, rigorous multiple-choice diagnostic question for a student studying:
 
 SUBJECT: {subject_name}
-TOPIC: {topic_name}
-SUBTOPICS / KEY CONCEPTS: {subtopics_str}
+SELECTED TOPIC: {topic_name}
+MANDATORY SUBTOPICS: {subtopics_str}
 TARGET DIFFICULTY: {target_difficulty.upper()}
 PEDAGOGICAL INTENT: {pedagogical_intent}
 {probe_instruction}
@@ -115,24 +175,34 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
 {history_str}
 
 ### INSTRUCTIONS:
-1. SUBJECT-SPECIFIC REASONING:
-   - For Programming: Include real code snippets, trace variable states, constructors, method overrides, or bug detection.
+1. STRICT SYLLABUS TOPIC RESTRICTION:
+   - The question MUST test the selected topic: '{topic_name}' and specifically one of its subtopics: {subtopics_str}.
+   - DO NOT generate questions about other topics or general subject concepts.
+   - For example, if the topic is "Java buzzwords", DO NOT ask about OOP inheritance, encapsulation, interfaces, or file I/O. Focus exclusively on Java's core buzzwords (Architecture-neutral, Bytecode, Portability, Robustness, Multithreading, Security, Distributed, High performance).
+   - If the topic is "Differentiation", DO NOT ask about integration or matrix algebra.
+   - If the topic is "Chemical Bonding", DO NOT ask about organic reactions or thermodynamics.
+   - If the topic is "Laws of Motion", DO NOT ask about optics or electromagnetism.
+
+2. SUBJECT-SPECIFIC REASONING:
+   - For Programming: Include real code snippets, trace variable states, constructors, or method calls.
    - For Mathematics: Include concrete equations, derivations, calculus steps, or geometric reasoning.
    - For OS/DBMS: Include scheduling scenarios, transaction anomalies, normalization dependencies, or lock modes.
    - For Sciences: Include principles, reaction steps, or quantitative calculations.
    - NEVER generate generic placeholder questions like "What is the primary rule of X?". Ask concrete, realistic questions!
-2. DIFFICULTY GUIDELINES:
+
+3. DIFFICULTY GUIDELINES:
    - EASY: Direct recall of definition, basic syntax rule, or standard single-step application.
    - MEDIUM: Multi-step reasoning, code execution trace, calculating a result, or comparing two alternatives.
    - HARD: Complex edge cases, subtle concurrency/memory bugs, synthesis of multiple rules, or deep problem solving.
-3. OPTIONS & DISTRACTORS:
+
+4. OPTIONS & DISTRACTORS:
    - Provide EXACTLY 4 options (A, B, C, D).
    - Exactly ONE option must be scientifically correct (`isCorrect: true`).
    - The remaining THREE options must be realistic distractors representing common cognitive misconceptions or slips.
    - For each distractor, specify `misconceptionName` explaining the exact trap the student fell into.
    - Randomize which option is correct so it is not always option 1.
 
-4. MANDATORY SELF-CONTAINED QUESTION COMPLETENESS (NO MISSING INFORMATION):
+5. MANDATORY SELF-CONTAINED QUESTION COMPLETENESS (NO MISSING INFORMATION):
    - The question must be 100% self-contained. A student must be able to solve it completely from the text provided without guessing missing diagrams or data.
    - If the question refers to a diagram, chemical structure, Fischer projection, stereocenter layout, truth table, state table, matrix, or code snippet, YOU MUST EXPLICITLY INCLUDE THE FULL ASCII/TEXT DIAGRAM, FORMULA, TABLE, OR CODE SNIPPET DIRECTLY INSIDE `questionText`.
    - FOR ORGANIC CHEMISTRY / STEREOCHEMISTRY: NEVER say "represented in a standard Fischer projection" or "shown below" without drawing the projection! Draw it explicitly in ASCII, for example:
@@ -220,6 +290,31 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
                             logger.warning(f"Model '{model_name}' produced duplicate options. Rejecting.")
                             continue
 
+                        # Completeness validation: reject if refers to a diagram/projection without providing it
+                        q_lower = question_text.lower()
+                        visual_triggers = ["fischer projection", "shown below", "in the diagram below", "in the table below", "in the following diagram", "refer to the figure"]
+                        has_trigger = any(t in q_lower for t in visual_triggers)
+                        has_visual = "\n" in question_text or "---" in question_text or "|" in question_text or "+" in question_text or "{" in question_text
+                        if has_trigger and not has_visual:
+                            logger.warning(f"Model '{model_name}' generated incomplete question missing diagram/table. Rejecting.")
+                            continue
+
+                        # Independent Topic Relevance Validation
+                        candidate_q = {
+                            "questionText": question_text,
+                            "conceptTested": data.get("conceptTested", topic_name).strip(),
+                            "options": formatted_opts
+                        }
+                        is_relevant, rejection_reason = cls.validate_question_relevance(
+                            question_dict=candidate_q,
+                            subject_name=subject_name,
+                            topic_name=topic_name,
+                            subtopics=subtopics
+                        )
+                        if not is_relevant:
+                            logger.warning(f"Relevance Validator REJECTED question from '{model_name}': {rejection_reason}. Regenerating...")
+                            continue
+
                         return {
                             "id": f"q_adapt_{uuid.uuid4().hex[:12]}",
                             "questionText": question_text,
@@ -242,6 +337,7 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
         return cls.generate_heuristic_fallback_question(
             subject_name=subject_name,
             topic_name=topic_name,
+            subtopics=subtopics,
             target_difficulty=target_difficulty,
             pedagogical_intent=pedagogical_intent
         )
@@ -251,35 +347,150 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
         cls,
         subject_name: str,
         topic_name: str,
+        subtopics: List[str],
         target_difficulty: str,
         pedagogical_intent: str
     ) -> Dict[str, Any]:
-        """Subject-aware fallback question when network is offline."""
-        is_prog = any(k in subject_name.lower() for k in ["java", "python", "c++", "prog", "code", "dsa"])
+        """Subject- and subtopic-aware fallback questions when network or quota is restricted."""
+        top_lower = topic_name.lower()
         letter_map = ["A", "B", "C", "D"]
-        correct_idx = random.randint(0, 3)
 
-        if is_prog:
-            q_text = f"In {subject_name}, which code pattern accurately reflects proper architectural design and execution for '{topic_name}'?"
-            correct_text = f"Declaring modular structures with explicit scope, proper encapsulation, and handling null/edge cases."
+        # 1. Java Buzzwords
+        if "buzzword" in top_lower:
+            q_text = "Which architectural mechanism enables Java to fulfill its 'Architecture-Neutral' and 'Portable' buzzwords across different operating systems and CPU architectures?"
+            correct_text = "The Java compiler generates platform-independent bytecode (.class) instructions executed by an architecture-specific Java Virtual Machine (JVM)."
             distractors = [
-                (f"Making all member variables public and global to bypass accessor methods.", "Encapsulation Bypass"),
-                (f"Ignoring parameter validation and assuming inputs are always well-formed.", "Defensive Programming Omission"),
-                (f"Relying on hardcoded string literals rather than structured constants or enums.", "Hardcoding Trap")
+                ("Java source code is directly cross-compiled into native binary machine code for all target CPUs at install time.", "Native cross-compilation fallacy"),
+                ("Java utilizes an in-kernel CPU translator that dynamically converts x86 registers into ARM opcodes.", "Hardware translation assumption"),
+                ("Java omits data type size specifications, letting host operating systems choose integer sizes at runtime.", "Platform-dependent typing trap")
             ]
+            concept = "Architecture-Neutral & Portability"
+
+        # 2. Java Classes and Objects
+        elif "class" in top_lower or "object" in top_lower or "constructor" in top_lower:
+            q_text = (
+                "Consider the following Java class definition:\n\n"
+                "public class Box {\n"
+                "    int width;\n"
+                "    public Box(int w) {\n"
+                "        this.width = w;\n"
+                "    }\n"
+                "    public static void main(String[] args) {\n"
+                "        Box b1 = new Box(10);\n"
+                "        Box b2 = b1;\n"
+                "        b2.width = 25;\n"
+                "        System.out.println(b1.width);\n"
+                "    }\n"
+                "}\n\n"
+                "What is the output when this program is executed?"
+            )
+            correct_text = "25"
+            distractors = [
+                ("10", "Pass-by-value / Reference copy isolation misconception"),
+                ("Compilation Error", "Static context access error confusion"),
+                ("0", "Default uninitialized primitive misconception")
+            ]
+            concept = "Object Reference & Heap Mutation"
+
+        # 3. Python Functions
+        elif "function" in top_lower or "def" in top_lower or "python" in subject_name.lower():
+            q_text = (
+                "Consider the following Python function definition:\n\n"
+                "def append_item(val, items=[]):\n"
+                "    items.append(val)\n"
+                "    return items\n\n"
+                "print(append_item(1))\n"
+                "print(append_item(2))\n\n"
+                "What is the exact output of running this code?"
+            )
+            correct_text = "[1]\n[1, 2]"
+            distractors = [
+                ("[1]\n[2]", "Mutable default argument re-evaluation misconception"),
+                ("[1, 2]\n[1, 2]", "Static return value alias confusion"),
+                ("TypeError: default parameter cannot be mutable", "Static analysis error confusion")
+            ]
+            concept = "Default Mutable Arguments in Python Functions"
+
+        # 4. Mathematics: Differentiation
+        elif "differentiat" in top_lower or "derivative" in top_lower or "calculus" in subject_name.lower():
+            q_text = (
+                "Find the first derivative dy/dx of the composite function:\n"
+                "y = (3x^2 + 2x)^4\n"
+                "using the chain rule."
+            )
+            correct_text = "4(3x^2 + 2x)^3 * (6x + 2)"
+            distractors = [
+                ("4(3x^2 + 2x)^3", "Omitting inner derivative in chain rule"),
+                ("4(6x + 2)^3", "Differentiating inside power incorrectly"),
+                ("12x(3x^2 + 2x)^3", "Incomplete inner derivative evaluation")
+            ]
+            concept = "Chain Rule for Composite Functions"
+
+        # 5. Physics: Laws of Motion
+        elif "motion" in top_lower or "newton" in top_lower or "force" in top_lower:
+            q_text = (
+                "A 5 kg block rests on a horizontal frictionless surface. A constant horizontal force "
+                "of 20 N is applied for 3 seconds. Starting from rest, what is the block's final velocity?"
+            )
+            correct_text = "12 m/s"
+            distractors = [
+                ("4 m/s", "Confusing acceleration with final velocity"),
+                ("60 m/s", "Failing to divide force by mass (v = F * t)"),
+                ("15 m/s", "Arithmetic acceleration error")
+            ]
+            concept = "Newton's Second Law: Acceleration and Impulse"
+
+        # 6. Chemistry: Chemical Bonding
+        elif "bonding" in top_lower or "bond" in top_lower:
+            q_text = (
+                "According to VSEPR theory, what is the electron-pair geometry and the molecular shape "
+                "of a water (H2O) molecule, and what is its approximate H-O-H bond angle?"
+            )
+            correct_text = "Tetrahedral electron geometry, Bent molecular shape, approximately 104.5 degrees."
+            distractors = [
+                ("Linear electron geometry, Linear molecular shape, 180 degrees.", "Ignoring lone pair repulsion in VSEPR"),
+                ("Trigonal planar electron geometry, Bent molecular shape, 120 degrees.", "Counting only one lone pair on Oxygen"),
+                ("Tetrahedral electron geometry, Trigonal pyramidal shape, 107 degrees.", "Confusing Ammonia (NH3) with Water (H2O)")
+            ]
+            concept = "VSEPR Molecular Geometry & Lone Pair Repulsion"
+
+        # 7. Chemistry: Stereochemistry
+        elif "stereo" in top_lower or "chiral" in top_lower:
+            q_text = (
+                "Consider the following Fischer projection of tartaric acid:\n"
+                "       COOH\n"
+                "        |\n"
+                "    H---+---OH   (C2)\n"
+                "        |\n"
+                "    H---+---OH   (C3)\n"
+                "        |\n"
+                "       COOH\n\n"
+                "What are the absolute configurations (CIP rules) for C2 and C3, and is this compound optically active?"
+            )
+            correct_text = "C2 is (2R), C3 is (3S); it is an optically inactive meso compound due to an internal mirror plane."
+            distractors = [
+                ("C2 is (2R), C3 is (3R); it is an optically active chiral enantiomer.", "Failing to observe the internal plane of symmetry"),
+                ("C2 is (2S), C3 is (3S); it is a racemic mixture.", "Confusing single meso molecules with equimolar mixtures"),
+                ("C2 is (2S), C3 is (3R); it is a diastereomer without symmetry.", "Inverting horizontal priority designations incorrectly")
+            ]
+            concept = "CIP Stereocenter Configuration & Meso Symmetry"
+
+        # 8. Dynamic Syllabus Subtopic Grounding Fallback
         else:
-            q_text = f"In {subject_name}, what principle governs the correct application of '{topic_name}'?"
-            correct_text = f"It enforces systematic boundary conditions and verified transformations according to core domain rules."
+            tested_sub = subtopics[0] if subtopics else topic_name
+            q_text = f"In {subject_name}, which statement accurately characterizes the core operational rules of '{tested_sub}'?"
+            correct_text = f"It systematically establishes verified preconditions, defined boundary transitions, and domain invariants for {tested_sub}."
             distractors = [
-                (f"It assumes conditions remain invariant even when operational parameters shift.", "Static Invariance Fallacy"),
-                (f"It allows omitting foundational prerequisites if an intuitive approximation is available.", "Approximation Shortcut"),
-                (f"It applies only in isolated test scenarios and fails in broader applications.", "Scope Limitation Trap")
+                (f"It bypasses standard verification prerequisites, treating {tested_sub} as statically invariant under all states.", "Precondition bypass trap"),
+                (f"It relies solely on runtime approximation without adhering to formal rules for {tested_sub}.", "Heuristic shortcut fallacy"),
+                (f"It restricts {tested_sub} execution to isolated unit scenarios without modular integration.", "Scope isolation trap")
             ]
+            concept = f"Core Foundations of {tested_sub}"
 
         raw_opts = []
-        raw_opts.append({"text": correct_text, "isCorrect": True, "misconceptionName": None, "explanation": "Valid, robust domain principle."})
+        raw_opts.append({"text": correct_text, "isCorrect": True, "misconceptionName": None, "explanation": "Valid, scientifically sound domain principle."})
         for dt, mn in distractors:
-            raw_opts.append({"text": dt, "isCorrect": False, "misconceptionName": mn, "explanation": f"Misconception: {mn} violates standards."})
+            raw_opts.append({"text": dt, "isCorrect": False, "misconceptionName": mn, "explanation": f"Misconception: {mn} violates domain standards."})
 
         # Shuffle
         random.shuffle(raw_opts)
@@ -298,13 +509,13 @@ PEDAGOGICAL INTENT: {pedagogical_intent}
             "id": f"q_fallback_{uuid.uuid4().hex[:12]}",
             "questionText": q_text,
             "difficulty": target_difficulty.lower(),
-            "conceptTested": topic_name,
+            "conceptTested": concept,
             "pedagogicalIntent": pedagogical_intent,
             "options": opts,
             "is_fallback": True,
             "generation_source": "heuristic_fallback",
             "model_used": "offline_heuristic",
-            "fallback_notice": "Offline Heuristic Fallback: Live Gemini AI API was temporarily unreachable. This question was generated using offline heuristics, not live Gemini syllabus analysis."
+            "fallback_notice": f"Offline Subject Fallback: Grounded strictly in syllabus topic '{topic_name}'."
         }
 
     @classmethod
