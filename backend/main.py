@@ -141,31 +141,49 @@ class TutorChatRequest(BaseModel):
 # In-memory rate limiting map: user_id -> last_timestamp
 user_last_tutor_request: Dict[str, float] = {}
 
-# Dependency: Authenticated User (with seamless demo student fallback)
+# Dependency: Authenticated User (Strict authentication; demo fallback only if explicitly enabled via ALLOW_ANONYMOUS_DEMO=true)
 def get_current_user(authorization: Optional[str] = Header(None)):
+    allow_anonymous_demo = os.getenv("ALLOW_ANONYMOUS_DEMO", "false").lower() == "true"
+
     if not authorization or not authorization.startswith("Bearer "):
-        demo_user = get_user_by_id("usr_demo_4491")
-        if demo_user:
-            return demo_user
+        if allow_anonymous_demo:
+            demo_user = get_user_by_id("usr_demo_4491")
+            if demo_user:
+                return demo_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication token required"
+            detail="Authentication token required. Please sign in."
         )
-    token = authorization.split(" ")[1]
+
+    parts = authorization.split(" ")
+    if len(parts) < 2 or not parts[1].strip():
+        if allow_anonymous_demo:
+            demo_user = get_user_by_id("usr_demo_4491")
+            if demo_user:
+                return demo_user
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token required. Please sign in."
+        )
+
+    token = parts[1].strip()
     sess = get_session(token)
     if not sess:
-        demo_user = get_user_by_id("usr_demo_4491")
-        if demo_user:
-            return demo_user
+        if allow_anonymous_demo:
+            demo_user = get_user_by_id("usr_demo_4491")
+            if demo_user:
+                return demo_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired or invalid. Please sign in again."
         )
+
     user = get_user_by_id(sess["user_id"])
     if not user:
-        demo_user = get_user_by_id("usr_demo_4491")
-        if demo_user:
-            return demo_user
+        if allow_anonymous_demo:
+            demo_user = get_user_by_id("usr_demo_4491")
+            if demo_user:
+                return demo_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Student account not found."

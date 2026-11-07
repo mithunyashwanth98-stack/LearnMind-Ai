@@ -317,18 +317,18 @@ def heuristic_syllabus_parser(
                             approx_page = p.get("page_number", 1)
                             break
 
-                # Extract topics inside this section
-                raw_topics = [t.strip(" -•*;\t\r\n\u200b") for t in re.split(r'[-–—•;]+', unit_body) if len(t.strip(" -•*;\t\r\n\u200b")) > 3]
+                # Extract topics inside this section by splitting on dashes, semicolons, bullets
+                raw_topics = [t.strip(" -•*;\t\r\n\u200b") for t in re.split(r'[-–—•;]+', unit_body) if len(t.strip(" -•*;\t\r\n\u200b")) > 2]
                 topics = []
-                for t_idx, topic_str in enumerate(raw_topics[:8]):
+                for t_idx, topic_str in enumerate(raw_topics):
                     # Strip trailing hour counts like (6) or [4]
                     clean_top = re.sub(r'\s*\([0-9]+\)\s*$', '', topic_str).strip()
                     if clean_top and len(clean_top) > 2 and not re.match(r'^[0-9\s()]+$', clean_top):
                         topics.append({
-                            "id": f"top_{idx + 1}_{t_idx + 1}",
-                            "name": clean_top[:70],
+                            "id": f"top_{idx + 1}_{len(topics) + 1}",
+                            "name": clean_top[:80],
                             "page_number": approx_page,
-                            "learningObjectives": [f"Understand core mechanisms of {clean_top[:40]}"],
+                            "learningObjectives": [f"Understand core mechanisms of {clean_top[:45]}"],
                             "prerequisites": ["Foundational Subject Principles"],
                             "subtopics": [f"{clean_top[:30]} Principles", "Applications & Analysis"]
                         })
@@ -367,17 +367,28 @@ def heuristic_syllabus_parser(
                         approx_page = p.get("page_number", 1)
                         break
 
-            raw_lines = [l.strip(" -•*;\t") for l in unit_body.splitlines() if len(l.strip(" -•*;\t")) > 3]
+            raw_tokens = []
+            for line in unit_body.splitlines():
+                if re.match(r'^(unit|module|chapter|hours|credits|total)', line, re.IGNORECASE):
+                    continue
+                # Split line by dashes, semicolons, bullets
+                parts = [p.strip(" -•*;\t\r\n\u200b") for p in re.split(r'[-–—;•]+', line) if len(p.strip(" -•*;\t\r\n\u200b")) > 2]
+                if parts:
+                    raw_tokens.extend(parts)
+                elif len(line.strip(" -•*;\t")) > 2:
+                    raw_tokens.append(line.strip(" -•*;\t"))
+
             topics = []
-            for t_idx, line in enumerate(raw_lines[:6]):
-                if not re.match(r'^(unit|module|chapter|hours|credits)', line, re.IGNORECASE):
+            for t_idx, token in enumerate(raw_tokens):
+                clean_top = re.sub(r'\s*\([0-9]+\)\s*$', '', token).strip()
+                if clean_top and len(clean_top) > 2 and not re.match(r'^[0-9\s()]+$', clean_top):
                     topics.append({
-                        "id": f"top_{idx + 1}_{t_idx + 1}",
-                        "name": line[:70],
+                        "id": f"top_{idx + 1}_{len(topics) + 1}",
+                        "name": clean_top[:80],
                         "page_number": approx_page,
-                        "learningObjectives": [f"Understand core mechanisms of {line[:40]}"],
+                        "learningObjectives": [f"Understand core mechanisms of {clean_top[:45]}"],
                         "prerequisites": ["Foundational Subject Principles"],
-                        "subtopics": [f"{line[:30]} Principles", "Applications & Analysis"]
+                        "subtopics": [f"{clean_top[:30]} Principles", "Applications & Analysis"]
                     })
 
             if not topics:
@@ -510,15 +521,20 @@ DOCUMENT CONTENT:
      * If document covers Chemistry, subject is 'Engineering Chemistry'.
      * If document covers Calculus, subject is 'Engineering Mathematics'.
    - NEVER default to Mathematics or Java unless the text explicitly details that subject.
-2. Extract all Units / Modules / Chapters hierarchically from the document.
-3. Under each Unit, extract all discrete Topics and their Subtopics.
-4. For each Topic:
+2. TOPIC GRANULARITY REQUIREMENT:
+   - Extract discrete, individual syllabus topics under each Unit.
+   - In academic syllabi, concepts inside a unit are delimited by dashes (– or -), bullets, commas, or semicolons.
+   - DO NOT collapse an entire unit into 1 or 2 mega-topics!
+   - Every individual syllabus topic (e.g. Unit 1: 'Java Buzzwords', 'Data Types, Variables and Arrays', 'Operators & Expressions', 'Control Statements', 'Classes and Constructors', 'Methods and Parameter Passing', 'Access Specifiers and Static Members', 'Method Overloading') must be its own Topic item under the unit, so that students can independently mark coverage and track completion for each topic.
+   - Do NOT unnecessarily split meaningful topic names into single words or meaningless fragments. Keep meaningful multi-word phrases intact (e.g., 'Data types, variables and arrays', 'Access specifiers', 'Static members', 'Method overloading').
+   - A typical academic unit should contain 5 to 14 discrete topics.
+3. FOR EACH TOPIC:
    - Provide a clear, recognizable Topic Name.
    - Record the 1-based page number where this topic appears (look for --- PAGE X --- delimiters).
    - List key Learning Objectives and Prerequisites.
-   - List detailed Subtopics.
-5. Provide a confidence_score between 0.0 and 1.0 reflecting how clearly the curriculum was stated.
-6. Output strict JSON matching the requested schema.
+   - List detailed Subtopics or sub-concepts covered within this topic.
+4. Provide a confidence_score between 0.0 and 1.0 reflecting how clearly the curriculum was stated.
+5. Output strict JSON matching the requested schema.
 """
 
     config = types.GenerateContentConfig(
@@ -552,6 +568,36 @@ DOCUMENT CONTENT:
                 parsed = clean_json_response(response.text)
                 units = parsed.get("units", [])
                 if units:
+                    # Granularity normalizer: If a unit has <= 2 topics but has extensive subtopics (>= 3),
+                    # promote those subtopics into discrete topics so every syllabus concept can be audited.
+                    normalized_units = []
+                    for u_idx, unit in enumerate(units):
+                        curr_topics = unit.get("topics", [])
+                        if len(curr_topics) <= 2 and any(len(t.get("subtopics", [])) >= 3 for t in curr_topics):
+                            expanded_topics = []
+                            for t in curr_topics:
+                                sub_list = t.get("subtopics", [])
+                                if len(sub_list) >= 3:
+                                    for s_idx, st in enumerate(sub_list):
+                                        clean_st = st.strip()
+                                        if clean_st and len(clean_st) > 2:
+                                            expanded_topics.append({
+                                                "id": f"top_{u_idx + 1}_{len(expanded_topics) + 1}",
+                                                "name": clean_st,
+                                                "page_number": t.get("page_number", 1),
+                                                "learningObjectives": [f"Understand core principles of {clean_st}"],
+                                                "prerequisites": t.get("prerequisites", ["Foundational Subject Principles"]),
+                                                "subtopics": [f"{clean_st} Fundamentals", "Implementation & Practice"]
+                                            })
+                                else:
+                                    t["id"] = f"top_{u_idx + 1}_{len(expanded_topics) + 1}"
+                                    expanded_topics.append(t)
+                            unit["topics"] = expanded_topics
+                        normalized_units.append(unit)
+
+                    units = normalized_units
+                    parsed["units"] = units
+
                     topic_count = 0
                     for u_idx, unit in enumerate(units):
                         if "id" not in unit or not unit["id"]:

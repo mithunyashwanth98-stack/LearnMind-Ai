@@ -777,24 +777,56 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
 
                 {/* Units & Topics List with Interactive Status Badges */}
                 <div className="space-y-6">
-                  {selectedSubject.units.map((unit, uIdx) => (
-                    <div key={unit.id} className="p-5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-cyan-400">
-                            UNIT {uIdx + 1}
-                          </span>
-                          <span className="text-sm font-bold text-white">{unit.title}</span>
-                          {unit.pageNumber && (
-                            <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
-                              p. {unit.pageNumber}
+                  {selectedSubject.units.map((unit, uIdx) => {
+                    const completedInUnit = unit.topics.filter(
+                      (t) => (t.coverageStatus === 'completed' || t.completed)
+                    ).length;
+                    const totalInUnit = unit.topics.length;
+                    const unitPct = totalInUnit > 0 ? Math.round((completedInUnit / totalInUnit) * 100) : 0;
+                    const isUnitComplete = totalInUnit > 0 && completedInUnit === totalInUnit;
+
+                    return (
+                      <div key={unit.id} className="p-5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-mono font-bold text-cyan-400">
+                              UNIT {uIdx + 1}
                             </span>
-                          )}
+                            <span className="text-sm font-bold text-white">{unit.title}</span>
+                            {unit.pageNumber && (
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
+                                p. {unit.pageNumber}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`text-[11px] font-mono font-bold px-2.5 py-0.5 rounded-full border ${
+                                isUnitComplete
+                                  ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400'
+                                  : completedInUnit > 0
+                                  ? 'bg-cyan-950/50 border-cyan-500/30 text-cyan-300'
+                                  : 'bg-slate-900 border-slate-700 text-slate-400'
+                              }`}
+                            >
+                              {isUnitComplete ? '✓ Unit Complete' : `${completedInUnit}/${totalInUnit} Topics (${unitPct}%)`}
+                            </span>
+                          </div>
                         </div>
-                        <span className="text-xs text-slate-500 font-mono">
-                          {unit.topics.length} topics
-                        </span>
-                      </div>
+
+                        {/* Unit-Wise Mini Progress Bar */}
+                        <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              isUnitComplete
+                                ? 'bg-emerald-400'
+                                : completedInUnit > 0
+                                ? 'bg-gradient-to-r from-cyan-400 to-blue-500'
+                                : 'bg-transparent'
+                            }`}
+                            style={{ width: `${unitPct}%` }}
+                          />
+                        </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
                         {unit.topics.map((topic) => {
@@ -852,7 +884,8 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                         })}
                       </div>
                     </div>
-                  ))}
+                  );
+                })}
                 </div>
               </div>
             </GlassCard>
@@ -1370,20 +1403,40 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
             </div>
 
             {/* VIEW A: FOCUSED TOPIC CARD (TOPIC-BY-TOPIC INTERACTIVE AUDIT) */}
-            {auditViewMode === 'card' && currentItem && (
-              <div className="space-y-6 py-2">
-                {/* Topic Metadata & Badge */}
-                <div className="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono font-bold text-cyan-400 uppercase tracking-wide">
-                      {currentItem.unitTitle}
-                    </span>
-                    {currentItem.topic.pageNumber && (
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
-                        Page {currentItem.topic.pageNumber}
-                      </span>
-                    )}
-                  </div>
+            {auditViewMode === 'card' && currentItem && (() => {
+              const currentUnitTopics = auditSubject?.units.find((u) => u.id === currentItem.unitId)?.topics || [];
+              const currentUnitCompleted = currentUnitTopics.filter(
+                (t) => coverageMap[t.id] === 'completed'
+              ).length;
+              const currentUnitTotal = currentUnitTopics.length;
+              const currentUnitPct = currentUnitTotal > 0 ? Math.round((currentUnitCompleted / currentUnitTotal) * 100) : 0;
+              const isCurrentUnitComplete = currentUnitTotal > 0 && currentUnitCompleted === currentUnitTotal;
+
+              return (
+                <div className="space-y-6 py-2">
+                  {/* Topic Metadata & Badge */}
+                  <div className="p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-mono font-bold text-cyan-400 uppercase tracking-wide">
+                          {currentItem.unitTitle}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono border ${
+                          isCurrentUnitComplete
+                            ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400 font-bold'
+                            : currentUnitCompleted > 0
+                            ? 'bg-cyan-950/50 border-cyan-500/30 text-cyan-300'
+                            : 'bg-slate-800 border-slate-700 text-slate-400'
+                        }`}>
+                          Unit: {currentUnitCompleted}/{currentUnitTotal} ({currentUnitPct}%)
+                        </span>
+                      </div>
+                      {currentItem.topic.pageNumber && (
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
+                          Page {currentItem.topic.pageNumber}
+                        </span>
+                      )}
+                    </div>
 
                   <div>
                     <h4 className="text-xl font-bold text-white tracking-wide">
@@ -1548,7 +1601,7 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                   </div>
                 </div>
               </div>
-            )}
+            ); })()}
 
             {/* VIEW B: GRID MATRIX OVERVIEW (ALLOWS DIRECT JUMP) */}
             {auditViewMode === 'matrix' && (
@@ -1556,11 +1609,30 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                 <div className="text-xs text-slate-400">
                   Click any topic to jump to it, or click the status badge to toggle.
                 </div>
-                {auditSubject.units.map((unit, uIdx) => (
-                  <div key={unit.id} className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                    <div className="text-xs font-bold text-cyan-400 uppercase tracking-wide">
-                      {unit.title}
-                    </div>
+                {auditSubject.units.map((unit) => {
+                  const uCompleted = unit.topics.filter((t) => coverageMap[t.id] === 'completed').length;
+                  const uTotal = unit.topics.length;
+                  const uPct = uTotal > 0 ? Math.round((uCompleted / uTotal) * 100) : 0;
+                  const isUComplete = uTotal > 0 && uCompleted === uTotal;
+
+                  return (
+                    <div key={unit.id} className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-bold text-cyan-400 uppercase tracking-wide">
+                          {unit.title}
+                        </div>
+                        <span
+                          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
+                            isUComplete
+                              ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400'
+                              : uCompleted > 0
+                              ? 'bg-cyan-950/50 border-cyan-500/30 text-cyan-300'
+                              : 'bg-slate-900 border-slate-700 text-slate-400'
+                          }`}
+                        >
+                          {isUComplete ? '✓ Unit Complete' : `${uCompleted}/${uTotal} (${uPct}%)`}
+                        </span>
+                      </div>
                     <div className="space-y-1.5">
                       {unit.topics.map((t) => {
                         const status = coverageMap[t.id] || 'not_started';
@@ -1600,8 +1672,9 @@ export const SyllabusPage: React.FC<SyllabusPageProps> = ({
                       })}
                     </div>
                   </div>
-                ))}
-              </div>
+                );
+              })}
+            </div>
             )}
 
             {/* VIEW C: CELEBRATORY AUDIT SUMMARY */}
